@@ -1084,7 +1084,7 @@ mod tests {
     fn onboarding_pane_rows_select_and_its_url_link_resolves() {
         crate::hyperlinks::set_hyperlinks_override(Some(true));
         let mut v = view();
-        let mut screen = crate::onboarding::OnboardingScreen::welcome();
+        let mut screen = crate::onboarding::OnboardingScreen::welcome(Vec::new());
         let mut panel = crate::auth_panel::AuthPanel::new("Login to Prime Inference");
         panel.show_auth_url("https://fixture.example/auth".to_string(), None);
         screen.mount_panel(crate::onboarding_flow::OnboardingPanel::Auth {

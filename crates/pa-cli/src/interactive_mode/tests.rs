@@ -336,15 +336,15 @@ fn settings_sink_completes_a_provisioned_home_without_touching_the_choice() {
         !sink.onboarding_shown(),
         "the never-completed home reads its missing flag through a fresh manager"
     );
-    assert!(
-        sink.agent_traces_choice_written(),
-        "the provisioned opt-out reads through a fresh manager"
-    );
     sink.mark_onboarding_complete().expect("silent completion");
 
-    // The next launch reads through its own fresh manager: the gate
-    // never mounts the task again.
+    // The provisioned opt-out survives the silent completion; the next launch
+    // reads through its own fresh manager and the gate never mounts the task again.
     let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
+    assert!(
+        settings.agent_traces_choice_written(),
+        "the provisioned opt-out reads through a fresh manager"
+    );
     assert!(settings.get_onboarding_shown(), "the flag persisted");
     assert!(
         !settings.get_agent_traces_enabled(),
@@ -401,60 +401,6 @@ async fn report_an_aborted_flow_once() {
     assert!(
         sink.track_incomplete("aborted").is_none(),
         "a reported completion never adds an aborted outcome"
-    );
-}
-
-/// A fresh home (no choice written) is the one home the question still
-/// mounts for — the opt-in moment: the flow's `Share` answer persists
-/// beside the completion flag, and both read back through the next
-/// launch's fresh manager.
-#[test]
-fn settings_sink_persists_the_fresh_home_answer_with_the_flag() {
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let agent_dir = dir.path().join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut provisioned = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
-    provisioned
-        .set_telemetry_enabled(false)
-        .expect("telemetry off");
-
-    let sink = SettingsOnboardingSink {
-        cwd: dir.path().to_path_buf(),
-        agent_dir: agent_dir.clone(),
-        created_at: std::time::Instant::now(),
-        onboarding_id: uuid::Uuid::new_v4().to_string(),
-        ready_emitted: std::sync::atomic::AtomicBool::new(false),
-        completion_reported: std::sync::atomic::AtomicBool::new(false),
-        probe: StartupModelProbe {
-            cwd: dir.path().to_path_buf(),
-            agent_dir: agent_dir.clone(),
-            cli_provider: None,
-            cli_model: None,
-            models: None,
-            is_continuing: false,
-            api_key: None,
-        },
-    };
-    assert!(
-        !sink.onboarding_shown(),
-        "a fresh home has no completion flag yet"
-    );
-    assert!(
-        !sink.agent_traces_choice_written(),
-        "a fresh home carries no trace choice (sharing stays off until a choice is made)"
-    );
-    sink.set_agent_traces_enabled(true).expect("answer Share");
-    sink.mark_onboarding_complete()
-        .expect("complete onboarding");
-
-    let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
-    assert!(
-        settings.get_onboarding_shown(),
-        "the flow marked onboarding shown"
-    );
-    assert!(
-        settings.get_agent_traces_enabled(),
-        "the Share answer persisted with the flag"
     );
 }
 

@@ -339,6 +339,35 @@ impl SessionUi {
         }
     }
 
+    /// Synchronously fetch the catalog from the daemon and return the models for one provider.
+    /// Used by the onboarding flow to populate the post-auth model picker (the background
+    /// `spawn_model_catalog_refresh` does not fold while the onboarding pane owns the input loop).
+    pub(crate) async fn fetch_models_for_provider(
+        &self,
+        provider: &str,
+    ) -> Vec<pa_types::ai::Model> {
+        let Ok(value) = self
+            .client
+            .request_ok(DaemonCommand::GetModelCatalog {
+                id: None,
+                active_session_id: self.active_session_id.clone(),
+                rest: Map::default(),
+            })
+            .await
+        else {
+            return Vec::new();
+        };
+        let models: Vec<pa_types::ai::Model> = value
+            .get("models")
+            .cloned()
+            .and_then(|models| serde_json::from_value(models).ok())
+            .unwrap_or_default();
+        models
+            .into_iter()
+            .filter(|model| model.provider == provider)
+            .collect()
+    }
+
     /// Cycle within the session's scoped list when one is set, else the available catalog. A `null`
     /// answer means "no other model"; the status names the provider (`Model: provider/id`, unlike
     /// the picker's `Model: <id>`).
