@@ -154,6 +154,62 @@ static RAW_MODELS: &[RawModel] = &[
         headers: &[],
         compat: None,
     },
+    // FORK-ONLY: BAI has no counterpart in the upstream TS models.generated.ts.
+    // A TS re-sync of this file must preserve these entries.
+    //
+    // cost is BAI's published standard price (USD/1M tokens; Haiku uses its
+    // <=100k-prompt tier). reasoning stays false: BAI accepts both the OpenAI
+    // `reasoning_effort` and the Anthropic `thinking` parameters but executes
+    // neither (measured thinking_tokens: 0 on /v1/messages and /v1/chat/
+    // completions), so advertising levels would render dead controls.
+    RawModel {
+        provider: "bai",
+        id: "claude-haiku-5.5",
+        name: "Claude Haiku 5.5 (BAI)",
+        api: "openai-completions",
+        base_url: "https://api.b.ai/v1",
+        reasoning: false,
+        thinking_levels: &[],
+        input: &[crate::types::ModelInput::Text, crate::types::ModelInput::Image],
+        cost: (0.1, 0.5, 0.01, 0.125),
+        context_window: 1_000_000,
+        max_tokens: 128_000,
+        featured: None,
+        headers: &[],
+        compat: None,
+    },
+    RawModel {
+        provider: "bai",
+        id: "claude-opus-5.5",
+        name: "Claude Opus 5.5 (BAI)",
+        api: "openai-completions",
+        base_url: "https://api.b.ai/v1",
+        reasoning: false,
+        thinking_levels: &[],
+        input: &[crate::types::ModelInput::Text, crate::types::ModelInput::Image],
+        cost: (4.0, 20.0, 0.2, 5.0),
+        context_window: 1_000_000,
+        max_tokens: 128_000,
+        featured: None,
+        headers: &[],
+        compat: None,
+    },
+    RawModel {
+        provider: "bai",
+        id: "claude-sonnet-5.5",
+        name: "Claude Sonnet 5.5 (BAI)",
+        api: "openai-completions",
+        base_url: "https://api.b.ai/v1",
+        reasoning: false,
+        thinking_levels: &[],
+        input: &[crate::types::ModelInput::Text, crate::types::ModelInput::Image],
+        cost: (2.0, 10.0, 0.2, 2.5),
+        context_window: 1_000_000,
+        max_tokens: 128_000,
+        featured: None,
+        headers: &[],
+        compat: None,
+    },
     RawModel {
         provider: "cerebras",
         id: "gemma-4-31b",
@@ -4478,15 +4534,18 @@ mod tests {
     use super::*;
     use crate::types::ModelExt;
 
+    /// The fork's fallback catalog scale. TS ships 32 providers / 152 models; this
+    /// fork adds BAI (3 models, fork-only — see the FORK-ONLY note above its
+    /// entries), so the numbers below are the fork's, not the TS mirror's.
     #[test]
-    fn catalog_loads_at_the_ts_fallback_scale() {
+    fn catalog_loads_at_the_fork_fallback_scale() {
         let providers = get_providers();
-        assert_eq!(providers.len(), 32, "the TS fallback provider list");
+        assert_eq!(providers.len(), 33, "32 TS providers + fork-only BAI");
         let total: usize = providers
             .iter()
             .map(|provider| get_models(provider).len())
             .sum();
-        assert_eq!(total, 152, "the TS fallback model list");
+        assert_eq!(total, 155, "152 TS models + 3 fork-only BAI models");
         assert_eq!(
             get_models("prime-inference").len(),
             110,
@@ -4509,8 +4568,8 @@ mod tests {
         }
         assert_eq!(
             tuples.len(),
-            43,
-            "42 public transport tuples + Prime Inference"
+            44,
+            "42 TS public transport tuples + Prime Inference + fork-only BAI"
         );
     }
 
