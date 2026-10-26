@@ -18,10 +18,6 @@ pub(crate) const PROVIDERS_PROMPT: &str = "Connect other providers, or continue.
 pub(crate) const PROVIDERS_SEARCH_PLACEHOLDER: &str = "Search providers";
 pub(crate) const PROVIDERS_NOTE: &str = "You can add providers anytime with /login.";
 pub(crate) const CONTINUE_LABEL: &str = "Continue";
-pub(crate) const LOGIN_ACTION_LABEL: &str = "Log in with Prime Intellect";
-/// The Prime Inference login's heading: the panel that owns the block names itself in place of the
-/// brand line.
-pub(crate) const PRIME_LOGIN_HEADING: &str = "Login with Prime Intellect";
 pub(crate) const API_KEY_PROMPT: &str = "Enter API key:";
 
 const WELCOME_DESCRIPTION_PARAGRAPHS: [&str; 2] = [
@@ -29,8 +25,6 @@ const WELCOME_DESCRIPTION_PARAGRAPHS: [&str; 2] = [
     "It learns from its history by refining its own memories, skills, prompts, and subagent specifications.",
 ];
 const WELCOME_DESCRIPTION_WIDTH: usize = 56;
-const MIN_HIGHLIGHT_WIDTH: usize = 30;
-const HIGHLIGHT_TRAILING: usize = 6;
 
 const MARKER_WIDTH: usize = 2;
 const MIN_ROW_WIDTH: usize = 34;
@@ -66,7 +60,8 @@ pub enum ProviderPick {
 }
 
 /// A searchable list in the onboarding block: the continue action pinned at index 0, the matching
-/// provider rows under it in a scrolling viewport, and the below/top hints.
+/// rows under it in a scrolling viewport, and the below/top hints. Reused for both the welcome
+/// provider list and the post-auth model list.
 #[derive(Debug)]
 pub struct ProviderPicker {
     options: Vec<ProviderPickerOption>,
@@ -74,6 +69,10 @@ pub struct ProviderPicker {
     /// The selected row: 0 is the continue action, 1.. the visible rows.
     selected: usize,
     scroll_top: usize,
+    /// The pinned row's label.
+    continue_label: String,
+    /// The prompt line above the search field.
+    prompt: String,
 }
 
 impl ProviderPicker {
@@ -84,7 +83,28 @@ impl ProviderPicker {
             search: SearchInput::new(),
             selected: 0,
             scroll_top: 0,
+            continue_label: CONTINUE_LABEL.to_string(),
+            prompt: PROVIDERS_PROMPT.to_string(),
         }
+    }
+
+    /// The welcome-screen variant: the pinned row says "Continue without signing in" and the
+    /// prompt invites the first provider choice rather than "connect more".
+    #[must_use]
+    pub fn welcome(options: Vec<ProviderPickerOption>) -> Self {
+        let mut picker = Self::new(options);
+        picker.continue_label = "Continue without signing in".to_string();
+        picker.prompt = "Choose a provider to start, or continue without signing in.".to_string();
+        picker
+    }
+
+    /// The post-auth model-list variant: the pinned row goes back to the provider list.
+    #[must_use]
+    pub fn model_picker(options: Vec<ProviderPickerOption>) -> Self {
+        let mut picker = Self::new(options);
+        picker.continue_label = "Back".to_string();
+        picker.prompt = "Choose a model for this provider.".to_string();
+        picker
     }
 
     /// One key id (the splash answers the exit keys first); `None` keeps the
@@ -172,7 +192,7 @@ impl ProviderPicker {
         let scroll_top = self.scroll_top.min(max_scroll);
         let row_width = self.row_width(width);
         let mut lines: Vec<Line> = vec![padded(width)];
-        lines.push(indented(theme, width, PROVIDERS_PROMPT, ThemeColor::Text));
+        lines.push(indented(theme, width, &self.prompt, ThemeColor::Text));
         lines.push(padded(width));
         lines.push(search_field_plain_row(
             theme,
@@ -187,7 +207,7 @@ impl ProviderPicker {
             theme,
             width,
             row_width,
-            CONTINUE_LABEL,
+            &self.continue_label,
             RowMarks {
                 connected: false,
                 selected: self.selected == 0,
@@ -456,26 +476,6 @@ pub(crate) fn welcome_rows(theme: &Theme, width: usize) -> Vec<Line> {
     lines
 }
 
-/// The welcome screen's single action: the bold `> Log in with Prime Intellect` row washed across
-/// its highlight band.
-pub(crate) fn welcome_action_row(theme: &Theme, width: usize) -> Line {
-    let band = MIN_HIGHLIGHT_WIDTH
-        .max(MARKER_WIDTH + crate::width::str_width(LOGIN_ACTION_LABEL) + HIGHLIGHT_TRAILING)
-        .min(width.saturating_sub(2).max(1));
-    let content = format!("> {LOGIN_ACTION_LABEL}");
-    let pad = band.saturating_sub(crate::width::str_width(&content));
-    let mut washed = Span::styled(
-        format!("{content}{}", " ".repeat(pad)),
-        theme
-            .fg_style(ThemeColor::Text)
-            .add_modifier(Modifier::BOLD),
-    );
-    washed.style = washed.style.bg(highlight_wash(theme));
-
-    let line = crate::width::truncate_line(&vec![Span::raw(" "), washed], width, "");
-    pad_to(line, width)
-}
-
 fn indented(theme: &Theme, width: usize, text: &str, tone: ThemeColor) -> Line {
     pad_to(vec![Span::raw(" "), theme.fg_span(tone, text)], width)
 }
@@ -518,19 +518,6 @@ mod tests {
 
     fn row_text(line: &Line) -> String {
         line.iter().map(|span| span.content.clone()).collect()
-    }
-
-    #[test]
-    fn the_welcome_action_row_matches_the_ts_band() {
-        // The band is the TS label width (26) + marker + trailing = 34; the row pads the rest of
-        // the pane.
-        let row = welcome_action_row(&theme(), 80);
-        let text = row_text(&row);
-        assert!(
-            text.starts_with(&format!(" > {LOGIN_ACTION_LABEL}")),
-            "the bold action label: {text:?}"
-        );
-        assert_eq!(crate::width::str_width(&text), 80, "the row fills the pane");
     }
 
     #[test]

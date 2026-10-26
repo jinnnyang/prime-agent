@@ -620,16 +620,6 @@ impl pa_tui::interactive::OnboardingSink for FreshHomeOnboardingSink {
             .get_onboarding_shown()
     }
 
-    fn agent_traces_choice_written(&self) -> bool {
-        pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir)
-            .agent_traces_choice_written()
-    }
-
-    fn set_agent_traces_enabled(&self, enabled: bool) -> anyhow::Result<()> {
-        pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir)
-            .set_agent_traces_enabled(enabled)
-    }
-
     fn mark_onboarding_complete(&self) -> anyhow::Result<()> {
         pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir)
             .set_onboarding_shown(true)
@@ -655,15 +645,6 @@ impl pa_tui::interactive::OnboardingSink for FailingMarkOnboardingSink {
             .get_onboarding_shown()
     }
 
-    fn agent_traces_choice_written(&self) -> bool {
-        pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir)
-            .agent_traces_choice_written()
-    }
-
-    fn set_agent_traces_enabled(&self, _enabled: bool) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     fn mark_onboarding_complete(&self) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("settings disk full"))
     }
@@ -676,9 +657,10 @@ impl pa_tui::interactive::OnboardingSink for FailingMarkOnboardingSink {
     }
 }
 
-/// A fresh install asks the trace question exactly once; TS asks unconditionally (divergence).
+/// A fresh home with a model already provisioned completes silently: the trace opt-in question was
+/// cut in the fork, so no dialog blocks the first turn and traces stay off by default.
 #[tokio::test]
-async fn fresh_home_asks_the_trace_question_once_and_completes() {
+async fn fresh_home_model_ready_completes_silently() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
@@ -705,12 +687,10 @@ async fn fresh_home_asks_the_trace_question_once_and_completes() {
         current_model: None,
         provider_auth: None,
     });
+    // No key step answers anything: the ready branch must mark onboarding shown and release the
+    // pane before the submission runs.
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![
-            pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            )),
             pa_tui::interactive::HeadlessStep::Submit("hi".to_string()),
             pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
         ],
@@ -723,21 +703,21 @@ async fn fresh_home_asks_the_trace_question_once_and_completes() {
 
     let rendered = outcome.frames.join("\n");
     assert!(
-        rendered.contains("Share agent traces"),
-        "the onboarding question rendered once for the fresh home:\n{rendered}"
+        rendered.contains("hello fresh home"),
+        "the silent release let the first turn run:\n{rendered}"
     );
     assert!(
-        rendered.contains("hello fresh home"),
-        "the answered dialog released the pane and the first turn ran:\n{rendered}"
+        !rendered.contains("Share agent traces"),
+        "the trace opt-in question was cut and never owned a frame:\n{rendered}"
     );
     let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
     assert!(
         settings.get_onboarding_shown(),
-        "the answered flow marked onboarding shown"
+        "the silent flow marked onboarding shown"
     );
     assert!(
-        settings.get_agent_traces_enabled(),
-        "the pre-selected Share answer persisted"
+        !settings.get_agent_traces_enabled(),
+        "traces stay off by default after the question was cut"
     );
     drop(supervisor);
 }
@@ -1019,16 +999,6 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
             wait_render("Paste a Prime API key below:"),
             pa_tui::interactive::HeadlessStep::Type("faux-prime-key".to_string()),
             enter(),
-            wait_render("Connect other providers, or continue."),
-            down(),
-            enter(),
-            wait_render("Enter API key"),
-            pa_tui::interactive::HeadlessStep::Type("faux-key".to_string()),
-            enter(),
-            wait_render("\u{2713}"),
-            enter(),
-            wait_render("Share agent traces"),
-            enter(),
             pa_tui::interactive::HeadlessStep::Submit("hi".to_string()),
             pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
         ],
@@ -1041,37 +1011,23 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
 
     let rendered = outcome.frames.join("\n");
     assert!(
-        rendered.contains("Log in with Prime Intellect"),
-        "the welcome screen's action rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Login with Prime Intellect"),
-        "the login dialog's heading replaced the brand line:\n{rendered}"
+        rendered.contains("Prime Inference"),
+        "the welcome provider list rendered the Prime row:\n{rendered}"
     );
     assert!(
         rendered.contains("Paste a Prime API key below:"),
         "the paste prompt mounted inside the pane:\n{rendered}"
     );
     assert!(
-        rendered.contains("Connect other providers, or continue."),
-        "the providers picker rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Share agent traces"),
-        "the trace question ended the flow:\n{rendered}"
-    );
-    assert!(
         rendered.contains("hello full flow"),
         "the completed flow released the pane and the first turn ran:\n{rendered}"
     );
-    // The scripted engine refuses live model switches by design, so the
-    // refusal row is the proof the apply REQUEST reached it.
     assert!(
-        rendered.contains("This session does not support model switching"),
-        "the apply round-tripped and the scripted engine's refusal surfaced:\n{rendered}"
+        !rendered.contains("Share agent traces"),
+        "the trace opt-in question was cut and never rendered:\n{rendered}"
     );
     assert!(
-        rendered.contains("Saved API key for Faux Key"),
+        rendered.contains("Saved API key for Prime Inference"),
         "the provider login's status row applied:\n{rendered}"
     );
 
@@ -1194,17 +1150,9 @@ async fn a_completed_flow_never_reopens_the_question_for_a_later_session() {
         current_model: None,
         provider_auth: None,
     });
-    // Down + Enter answers `Not now` (the answer that used to re-show), then the turn runs.
+    // No key answers anything: the ready branch silently marks onboarding shown and releases.
     let first_plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![
-            pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Down,
-                crossterm::event::KeyModifiers::NONE,
-            )),
-            pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::NONE,
-            )),
             pa_tui::interactive::HeadlessStep::Submit("hi".to_string()),
             pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
         ],
@@ -1216,21 +1164,21 @@ async fn a_completed_flow_never_reopens_the_question_for_a_later_session() {
         .expect("first interactive run");
     let first_rendered = first.frames.join("\n");
     assert!(
-        first_rendered.contains("Share agent traces"),
-        "the fresh home was asked once:\n{first_rendered}"
+        first_rendered.contains("hello each session"),
+        "the silent release let the first turn run:\n{first_rendered}"
     );
     assert!(
-        first_rendered.contains("hello each session"),
-        "the answered dialog released the pane and the first turn ran:\n{first_rendered}"
+        !first_rendered.contains("Share agent traces"),
+        "the trace opt-in question was cut and never rendered:\n{first_rendered}"
     );
     let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
     assert!(
         !settings.get_agent_traces_enabled(),
-        "the Not-now answer persisted (the opt-out)"
+        "traces stay off by default after the question was cut"
     );
     assert!(
         settings.get_onboarding_shown(),
-        "the completion flag persisted with the answer"
+        "the silent completion persisted the onboarding marker"
     );
 
     // The second session, same task: no key answers anything; the marker must gate itself.

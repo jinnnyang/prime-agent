@@ -181,16 +181,6 @@ impl pa_tui::interactive::OnboardingSink for SettingsOnboardingSink {
             .get_onboarding_shown()
     }
 
-    fn agent_traces_choice_written(&self) -> bool {
-        pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir)
-            .agent_traces_choice_written()
-    }
-
-    fn set_agent_traces_enabled(&self, enabled: bool) -> Result<()> {
-        let mut settings = pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir);
-        settings.set_agent_traces_enabled(enabled)
-    }
-
     fn mark_onboarding_complete(&self) -> Result<()> {
         let mut settings = pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir);
         settings.set_onboarding_shown(true)?;
