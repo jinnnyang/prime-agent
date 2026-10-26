@@ -795,6 +795,9 @@ async fn provisioned_opt_out_home_completes_silently_without_the_question() {
 /// Prime Inference row, one api-key provider row, one `mcp:` service row.
 struct FullFlowProviderAuth {
     agent_dir: PathBuf,
+    /// Kill this supervisor and its workers once a login stored its credential, so the flow's
+    /// next daemon request fails.
+    kill_daemon_after_login: Option<u32>,
 }
 
 impl FullFlowProviderAuth {
@@ -856,6 +859,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
         let provider_id = provider.id.clone();
         let provider_name = provider.name.clone();
         let key = api_key.map(str::to_string);
+        let kill_daemon_after_login = self.kill_daemon_after_login;
         Box::pin(async move {
             let mut auth = pa_core::auth::AuthStorage::create(&agent_dir);
             auth.set(
@@ -869,6 +873,15 @@ impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
                 return pa_tui::provider_auth::ProviderAuthOutcome::Error(format!(
                     "Failed to save API key for {provider_name}"
                 ));
+            }
+            if let Some(supervisor_pid) = kill_daemon_after_login {
+                let worker_pids = child_pids_of(supervisor_pid);
+                unsafe {
+                    libc::kill(supervisor_pid as i32, libc::SIGKILL);
+                }
+                for pid in worker_pids {
+                    kill_worker(pid);
+                }
             }
             pa_tui::provider_auth::ProviderAuthOutcome::Status(format!(
                 "Saved API key for {provider_name}"
@@ -992,6 +1005,7 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
         provider_auth: Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
             std::sync::Arc::new(FullFlowProviderAuth {
                 agent_dir: agent_dir.clone(),
+                kill_daemon_after_login: None,
             }),
         )),
     });
@@ -1070,6 +1084,79 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
             .credential(pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID)
             .is_some(),
         "the Prime sign-in stored its credential"
+    );
+    drop(supervisor);
+}
+
+/// A daemon that dies after sign-in must not finish onboarding: the model list cannot load, so
+/// the flow warns and returns to the provider picker with the marker unset.
+#[tokio::test]
+async fn a_failed_model_list_after_sign_in_warns_and_leaves_onboarding_open() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let agent_dir = dir.path().join("agent");
+    let session_dir = agent_dir.join("sessions");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    let supervisor = spawn_supervisor(dir.path());
+    let script = serde_json::json!({ "responses": [{ "text": "unused", "delayMs": 20 }] });
+    std::fs::write(
+        dir.path().join("script.json"),
+        serde_json::to_string(&script).expect("script json"),
+    )
+    .expect("script.json");
+
+    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    options.onboarding = Some(pa_tui::interactive::OnboardingTask {
+        sink: std::sync::Arc::new(FreshHomeOnboardingSink {
+            cwd: dir.path().to_path_buf(),
+            agent_dir: agent_dir.clone(),
+        }),
+        model_ready: std::sync::Arc::new(|| false),
+        current_model: None,
+        provider_auth: Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
+            std::sync::Arc::new(FullFlowProviderAuth {
+                agent_dir: agent_dir.clone(),
+                kill_daemon_after_login: Some(supervisor.child.id()),
+            }),
+        )),
+    });
+    let key = |code: crossterm::event::KeyCode| {
+        pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ))
+    };
+    let wait_render = |needle: &str| pa_tui::interactive::HeadlessStep::WaitRender {
+        needle: needle.to_string(),
+        timeout_ms: 10_000,
+    };
+    let plan = pa_tui::interactive::HeadlessPlan {
+        steps: vec![
+            key(crossterm::event::KeyCode::Down),
+            key(crossterm::event::KeyCode::Down),
+            key(crossterm::event::KeyCode::Enter),
+            wait_render("Enter API key:"),
+            pa_tui::interactive::HeadlessStep::Type("faux-key-value".to_string()),
+            key(crossterm::event::KeyCode::Enter),
+            wait_render("model list could not be loaded"),
+            wait_render("Faux Key"),
+            key(crossterm::event::KeyCode::Esc),
+        ],
+        width: 100,
+        height: 30,
+    };
+    let outcome = run_headless_bounded(options, plan)
+        .await
+        .expect("the run survives the dead daemon");
+
+    let rendered = outcome.frames.join("\n");
+    assert!(
+        rendered.contains("model list could not be loaded"),
+        "the failed model list surfaced as a warning:\n{rendered}"
+    );
+    let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
+    assert!(
+        !settings.get_onboarding_shown(),
+        "a failed model list must not mark onboarding shown"
     );
     drop(supervisor);
 }
