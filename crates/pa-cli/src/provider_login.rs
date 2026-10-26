@@ -28,6 +28,7 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("anthropic", "Anthropic"),
     ("amazon-bedrock", "Amazon Bedrock"),
     ("azure-openai-responses", "Azure OpenAI Responses"),
+    ("bai", "BAI"),
     ("cerebras", "Cerebras"),
     ("cloudflare-ai-gateway", "Cloudflare AI Gateway"),
     ("cloudflare-workers-ai", "Cloudflare Workers AI"),
