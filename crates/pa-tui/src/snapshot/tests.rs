@@ -101,7 +101,10 @@ fn user_message_with_text_and_image_keeps_the_text() {
 fn empty_user_message_renders_no_entry() {
     let message = json!({ "role": "user", "content": [] });
     assert_eq!(user_display_text(&message), None);
-    assert!(message_value_to_entries(&message).is_empty());
+    assert_eq!(
+        message_value_to_entries(&message),
+        [] as [crate::chat::ChatEntry; 0]
+    );
 }
 
 #[test]
@@ -1504,7 +1507,10 @@ fn session_command_rows_respect_display_and_shape() {
         "content": "Refined continual harness state: 1 edit applied.",
         "display": false,
     });
-    assert!(custom_message_entries(&hidden).is_empty());
+    assert_eq!(
+        custom_message_entries(&hidden),
+        [] as [crate::chat::ChatEntry; 0]
+    );
     let outcome = json!({
         "role": "custom",
         "customType": "session_slash_command_result",
@@ -1704,7 +1710,7 @@ fn transcript_replay_stacks_provider_failure_rows() {
     );
     assert!(replies[0].error.is_none(), "the healthy reply stays clean");
     for row in &replies[1..] {
-        assert!(row.blocks.is_empty());
+        assert_eq!(row.blocks, [] as [crate::chat::MessageBlock; 0]);
         assert_eq!(
             row.error.as_deref(),
             Some("Error: Connection error."),
@@ -1731,7 +1737,7 @@ fn transcript_replay_renders_contentless_abort() {
     let Some(ChatEntry::Assistant(message)) = chat.get(1) else {
         panic!("abort row: {chat:?}");
     };
-    assert!(message.blocks.is_empty());
+    assert_eq!(message.blocks, [] as [crate::chat::MessageBlock; 0]);
     assert_eq!(message.error.as_deref(), Some("Operation aborted"));
     assert!(message.aborted);
 }

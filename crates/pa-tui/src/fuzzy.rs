@@ -143,7 +143,10 @@ mod tests {
         let tied = fuzzy_filter(&items, "se", ToString::to_string);
         assert_eq!(tied.first().copied(), Some("settings"));
         assert_eq!(fuzzy_filter(&items, "", ToString::to_string), items);
-        assert!(fuzzy_filter(&items, "se zz", ToString::to_string).is_empty());
+        assert_eq!(
+            fuzzy_filter(&items, "se zz", ToString::to_string),
+            [] as [&str; 0]
+        );
     }
 
     #[test]

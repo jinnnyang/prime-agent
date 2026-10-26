@@ -81,7 +81,7 @@ fn scoped_left_returns_the_root_and_pops_the_scope() {
         opened.selection,
         SessionSelection::Attach("p-live".to_string())
     );
-    assert!(opened.expanded_ancestors.is_empty());
+    assert_eq!(opened.expanded_ancestors, [] as [std::string::String; 0]);
 }
 
 #[test]

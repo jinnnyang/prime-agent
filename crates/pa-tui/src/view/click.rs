@@ -502,10 +502,16 @@ mod tests {
     #[test]
     fn the_inline_compose_clears_the_click_surface() {
         let mut view = frame_with_a_card();
-        assert!(!view.click.window_sections.is_empty());
+        assert_ne!(
+            view.click.window_sections,
+            [] as [crate::view::click::WindowSection; 0]
+        );
         let card_row = section_screen_row(&view, 1);
         view.render_inline_frame(40);
-        assert!(view.click.window_sections.is_empty());
+        assert_eq!(
+            view.click.window_sections,
+            [] as [crate::view::click::WindowSection; 0]
+        );
         assert!(view.click.editor.is_none());
         assert_eq!(view.click_target_at(card_row, 2), None);
     }

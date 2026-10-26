@@ -105,7 +105,7 @@ fn a_nested_note_fits_when_the_pane_is_narrower_than_its_indent() {
     note_into(&mut mode, index, "checking");
     for width in [1, 4, 8, 9] {
         let lines = mode.render_note_details(&mode.rows[index], width);
-        assert!(!lines.is_empty());
+        assert_ne!(lines, [] as [std::vec::Vec<crate::Span>; 0]);
         let text: String = lines
             .iter()
             .map(|line| flat(line).trim().to_string())
@@ -125,7 +125,10 @@ fn a_nested_note_fits_when_the_pane_is_narrower_than_its_indent() {
 fn a_zero_width_pane_has_no_note_lines() {
     let (mut mode, index) = mode_with_row("worker", "mock-1");
     note_into(&mut mode, index, "checking");
-    assert!(mode.render_note_details(&mode.rows[index], 0).is_empty());
+    assert_eq!(
+        mode.render_note_details(&mode.rows[index], 0),
+        [] as [std::vec::Vec<crate::Span>; 0]
+    );
 }
 
 #[test]
