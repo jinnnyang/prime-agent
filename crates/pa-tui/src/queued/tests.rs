@@ -17,7 +17,10 @@ fn queue() -> QueuedMessages {
 
 #[test]
 fn empty_queue_renders_no_rows() {
-    assert!(render_queue(&theme(), &QueuedMessages::default(), "alt+up", 80).is_empty());
+    assert_eq!(
+        render_queue(&theme(), &QueuedMessages::default(), "alt+up", 80),
+        [] as [std::vec::Vec<crate::Span>; 0]
+    );
 }
 
 /// A picked-up prompt leaves its lane at delivery (RES-1306): while its turn prepares the strip is
@@ -71,7 +74,7 @@ fn the_starting_row_drops_with_the_projection() {
         "alt+up",
         80,
     );
-    assert!(rows.is_empty());
+    assert_eq!(rows, [] as [std::vec::Vec<crate::Span>; 0]);
 }
 
 #[test]

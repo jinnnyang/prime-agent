@@ -863,8 +863,10 @@ mod tests {
             other => panic!("unexpected splash tone {other:?}"),
         };
         for (frame, width) in [(0_u64, 80_usize), (1, 80), (7, 40), (113, 61), (250, 119)] {
-            let mut screen = OnboardingScreen::default();
-            screen.frame = frame;
+            let screen = OnboardingScreen {
+                frame,
+                ..Default::default()
+            };
             let expected: Vec<String> = screen
                 .mark_rows(&theme, width)
                 .iter()

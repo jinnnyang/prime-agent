@@ -502,7 +502,10 @@ mod tests {
             details: serde_json::Value::Null,
             is_error: false,
         });
-        assert!(image_rows(result.as_ref(), true, &theme()).is_empty());
+        assert_eq!(
+            image_rows(result.as_ref(), true, &theme()),
+            [] as [std::vec::Vec<Span>; 0]
+        );
         assert_eq!(eligible_images(result.as_ref(), true).count(), 0);
         let elided = Some(ToolResultView {
             content: vec![serde_json::json!({

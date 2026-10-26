@@ -745,7 +745,7 @@ fn flush_streams_append_then_repaints_the_changed_tail() {
         .any(|w| w == crate::osc133::ZONE_START.as_bytes()));
     assert!(first.starts_with(b"\r") && first.ends_with(b"\r\n"));
 
-    assert!(flush_bytes(&mut v, 80, 24).is_empty());
+    assert_eq!(flush_bytes(&mut v, 80, 24), [] as [u8; 0]);
 
     // New transcript rows land ABOVE the flushed dock: the changed
     // region is rewritten, not appended below the stale dock.

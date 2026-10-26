@@ -54,7 +54,7 @@ fn enter_on_the_shells_line_opens_the_node_with_the_shells_panel() {
     );
     assert_eq!(opened.panel, Some(SessionPanel::Shells { shell_id: None }));
     assert_eq!(opened.selected_row_identity, "shells:file:/x/p.jsonl");
-    assert!(opened.expanded_ancestors.is_empty());
+    assert_eq!(opened.expanded_ancestors, [] as [std::string::String; 0]);
 }
 
 #[test]

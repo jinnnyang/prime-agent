@@ -139,7 +139,10 @@ fn dedupes_user_binding_keys() {
 #[test]
 fn empty_user_array_disables_binding() {
     let kb = KeybindingsManager::with_user_bindings(cfg(&[("app.tools.expand", &[])]));
-    assert!(kb.get_keys("app.tools.expand").is_empty());
+    assert_eq!(
+        kb.get_keys("app.tools.expand"),
+        [] as [std::string::String; 0]
+    );
     assert!(!kb.matches("ctrl+o", "app.tools.expand"));
 }
 
@@ -150,7 +153,7 @@ fn unknown_user_ids_stay_but_never_resolve() {
         kb.get_user_bindings().get("not.a.binding").unwrap(),
         &["ctrl+q".to_string()]
     );
-    assert!(kb.get_keys("not.a.binding").is_empty());
+    assert_eq!(kb.get_keys("not.a.binding"), [] as [std::string::String; 0]);
     // The unknown claim frees nothing (no definition owns it).
     assert_eq!(
         kb.get_keys("tui.editor.cursorLineStart"),
@@ -217,7 +220,10 @@ fn list_edge_jump_defaults_resolve() {
 #[test]
 fn ctrl_r_is_unbound_by_default() {
     let kb = KeybindingsManager::new();
-    assert!(kb.get_keys("app.heartbeats.open").is_empty());
+    assert_eq!(
+        kb.get_keys("app.heartbeats.open"),
+        [] as [std::string::String; 0]
+    );
     assert!(!kb.matches("ctrl+r", "app.heartbeats.open"));
 }
 
@@ -336,7 +342,7 @@ fn load_drops_malformed_values() {
     assert!(!kb.get_user_bindings().contains_key("app.exit"));
     // An empty array is a binding disable, not malformed.
     assert!(kb.get_user_bindings().contains_key("app.interrupt"));
-    assert!(kb.get_keys("app.interrupt").is_empty());
+    assert_eq!(kb.get_keys("app.interrupt"), [] as [std::string::String; 0]);
 }
 
 #[test]
@@ -419,7 +425,10 @@ fn editor_claims_free_app_defaults_in_editor_scope() {
         kb.get_keys("tui.editor.cursorUp"),
         vec!["up".to_string(), "ctrl+o".to_string()]
     );
-    assert!(kb.get_keys("app.tools.expand").is_empty());
+    assert_eq!(
+        kb.get_keys("app.tools.expand"),
+        [] as [std::string::String; 0]
+    );
     // No scope => a claim never frees its default.
     assert_eq!(kb.get_keys("app.agents.new"), vec!["ctrl+n".to_string()]);
 }

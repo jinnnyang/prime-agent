@@ -116,7 +116,7 @@ mod tests {
         let joined: String = rest.iter().map(|s| s.content.as_str()).collect();
         assert_eq!(joined, "hello world");
         let (markers, rest) = split_leading_markers(&row());
-        assert!(markers.is_empty());
+        assert_eq!(markers, [] as [Span; 0]);
         assert_eq!(rest.len(), 2);
     }
 
@@ -130,6 +130,6 @@ mod tests {
 
         let mut only_marker = vec![Span::raw(ZONE_START)];
         strip(&mut only_marker);
-        assert!(only_marker.is_empty());
+        assert_eq!(only_marker, [] as [Span; 0]);
     }
 }

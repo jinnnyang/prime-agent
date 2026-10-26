@@ -291,7 +291,7 @@ fn a_deleted_path_survives_a_late_catalog_apply() {
         StatusTone::Muted,
         Some("/x/gone.jsonl".to_string()),
     );
-    assert!(mode.saved.is_empty());
+    assert_eq!(mode.saved, [] as [serde_json::Value; 0]);
     mode.apply_saved_loaded(vec![saved_catalog_row(
         "/x/gone.jsonl",
         "gone-1",

@@ -423,7 +423,7 @@ fn a_report_final_m_arriving_shifted_still_decodes() {
         reports(&outputs),
         vec![mouse::parse_sgr_mouse_event("\x1b[<0;13;2M").expect("valid report")]
     );
-    assert!(leaks(&outputs).is_empty());
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
 }
 
 /// THE RACE, MADE DETERMINISTIC: a read ending right after the `ESC` byte of a drag report makes
@@ -456,7 +456,7 @@ fn whole_reports_pass_through_as_the_terminal_sent_them() {
         let events = read_projection(report.as_bytes(), &[]);
         let outputs = run_guard(events);
         assert_eq!(reports(&outputs), expected_report(&report));
-        assert!(leaks(&outputs).is_empty());
+        assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
     }
 }
 
@@ -482,7 +482,7 @@ fn a_drag_burst_with_one_bad_boundary_stays_a_selection() {
         .filter_map(|report| crate::mouse::parse_sgr_mouse_event(&report))
         .collect();
     assert_eq!(reports(&outputs), expected);
-    assert!(leaks(&outputs).is_empty());
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
 }
 
 /// The same split, doubled: the report body itself spans three reads.
@@ -496,7 +496,7 @@ fn a_report_split_across_three_reads_still_decodes() {
         reports(&outputs),
         vec![crate::mouse::parse_sgr_mouse_event(&report).expect("valid report")]
     );
-    assert!(leaks(&outputs).is_empty());
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
 }
 
 // -- held Esc behavior ----------------------------------------------
@@ -505,10 +505,14 @@ fn a_report_split_across_three_reads_still_decodes() {
 fn a_held_esc_flushes_as_the_key_press_at_the_deadline() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
-    assert!(guard
-        .flush_expired((now + HOLD).checked_sub(Duration::from_millis(1)).unwrap())
-        .is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
+    assert_eq!(
+        guard.flush_expired((now + HOLD).checked_sub(Duration::from_millis(1)).unwrap()),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     assert_eq!(
         guard.flush_expired(now + HOLD),
         vec![GuardOutput::Event(esc_press())]
@@ -520,7 +524,10 @@ fn esc_then_a_character_within_the_window_is_the_alt_combo() {
     // crossterm's single-read parse of `\x1ba`: alt+a.
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     let mut expected = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
     expected.modifiers |= KeyModifiers::ALT;
     assert_eq!(
@@ -533,7 +540,10 @@ fn esc_then_a_character_within_the_window_is_the_alt_combo() {
 fn esc_then_an_unrelated_key_flushes_the_esc_first() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     let left = Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     assert_eq!(
         guard.feed(left.clone(), now + Duration::from_millis(1)),
@@ -545,7 +555,10 @@ fn esc_then_an_unrelated_key_flushes_the_esc_first() {
 fn esc_then_a_mouse_report_flushes_the_esc_and_passes_the_report() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     let wheel = Event::Mouse(CtMouse {
         kind: CtMouseKind::ScrollUp,
         column: 3,
@@ -572,25 +585,33 @@ fn esc_then_a_mouse_report_flushes_the_esc_and_passes_the_report() {
 fn a_half_assembled_sequence_is_dropped_at_the_deadline_never_typed() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     for (offset, c) in ['[', '<', '6', '4'].iter().enumerate() {
-        assert!(guard
-            .feed(
+        assert_eq!(
+            guard.feed(
                 char_press(*c),
                 now + Duration::from_millis(offset as u64 + 1)
-            )
-            .is_empty());
+            ),
+            [] as [crate::sequence_guard::GuardOutput; 0]
+        );
     }
-    assert!(guard
-        .flush_expired(now + HOLD + Duration::from_millis(4))
-        .is_empty());
+    assert_eq!(
+        guard.flush_expired(now + HOLD + Duration::from_millis(4)),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
 }
 
 #[test]
 fn a_non_keyboard_event_flushes_the_held_esc_first() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     let resize = Event::Resize(80, 24);
     let outputs = guard.feed(resize.clone(), now + Duration::from_millis(1));
     assert_eq!(
@@ -609,7 +630,10 @@ fn poll_deadline_parks_when_nothing_is_held() {
 fn poll_deadline_is_the_remaining_hold() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     assert_eq!(
         guard.poll_deadline(now + Duration::from_millis(6)),
         Some(Duration::from_millis(4))
@@ -670,15 +694,15 @@ fn a_split_x10_mouse_report_decodes() {
             ctrl: false,
         }]
     );
-    assert!(leaks(&outputs).is_empty());
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
 }
 
 /// An OSC reply split at its `ESC` byte is consumed whole — no `52;c;<base64>` text in the editor.
 #[test]
 fn a_split_osc_reply_is_consumed_whole() {
     let outputs = run_guard(read_projection(b"\x1b]52;c;YWJj\x07", &[1]));
-    assert!(leaks(&outputs).is_empty());
-    assert!(reports(&outputs).is_empty());
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
+    assert_eq!(reports(&outputs), [] as [mouse::MouseEvent; 0]);
 }
 
 /// A bracketed-paste marker split at its `ESC` byte is consumed; the pasted text still flows as
@@ -687,13 +711,13 @@ fn a_split_osc_reply_is_consumed_whole() {
 fn a_split_bracketed_paste_marker_is_consumed_and_the_text_flows() {
     let outputs = run_guard(read_projection(b"\x1b[200~hi", &[1]));
     assert_eq!(leaks(&outputs), vec![char_press('h'), char_press('i')]);
-    assert!(reports(&outputs).is_empty());
+    assert_eq!(reports(&outputs), [] as [mouse::MouseEvent; 0]);
 }
 
 #[test]
 fn a_split_bracketed_paste_end_marker_is_consumed() {
     let outputs = run_guard(read_projection(b"\x1b[201~", &[1]));
-    assert!(leaks(&outputs).is_empty());
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
 }
 
 // -- the review fixes: expiry, rxvt, keypad CSI-u, UTF-8 ALT ------
@@ -704,7 +728,10 @@ fn a_split_bracketed_paste_end_marker_is_consumed() {
 fn an_expired_hold_flushes_the_esc_before_the_next_key() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     assert_eq!(
         guard.feed(char_press('a'), now + HOLD + Duration::from_millis(1)),
         vec![
@@ -720,10 +747,14 @@ fn an_expired_hold_flushes_the_esc_before_the_next_key() {
 fn an_expired_half_assembled_sequence_drops_and_the_key_types() {
     let mut guard = SequenceGuard::default();
     let now = Instant::now();
-    assert!(guard.feed(esc_press(), now).is_empty());
-    assert!(guard
-        .feed(char_press('['), now + Duration::from_millis(1))
-        .is_empty());
+    assert_eq!(
+        guard.feed(esc_press(), now),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
+    assert_eq!(
+        guard.feed(char_press('['), now + Duration::from_millis(1)),
+        [] as [crate::sequence_guard::GuardOutput; 0]
+    );
     assert_eq!(
         guard.feed(char_press('x'), now + HOLD + Duration::from_millis(2)),
         vec![GuardOutput::Event(char_press('x'))]
@@ -765,12 +796,12 @@ fn every_split_of_an_rxvt_report_decodes() {
         }
         let outputs = run_guard(read_projection(stream, &[]));
         assert_eq!(reports(&outputs), expected);
-        assert!(leaks(&outputs).is_empty());
+        assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
     }
     // Malformed fields decode to nothing, like crossterm's parse.
     let outputs = run_guard(read_projection(b"\x1b[0;0;0M", &[1]));
-    assert!(reports(&outputs).is_empty());
-    assert!(leaks(&outputs).is_empty());
+    assert_eq!(reports(&outputs), [] as [mouse::MouseEvent; 0]);
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
 }
 
 /// A split kitty keypad report decodes as the key the unsplit parse delivers (`CSI 57399u` is
@@ -800,8 +831,8 @@ fn a_split_keypad_csi_u_arrives_as_the_key() {
     // The rest of the functional range stays consumed (TS drops it too, and no surface dispatches
     // it).
     let outputs = run_guard(read_projection(b"\x1b[57427u", &[1]));
-    assert!(leaks(&outputs).is_empty());
-    assert!(reports(&outputs).is_empty());
+    assert_eq!(leaks(&outputs), [] as [crossterm::event::Event; 0]);
+    assert_eq!(reports(&outputs), [] as [mouse::MouseEvent; 0]);
 }
 
 /// The legacy function-key form `ESC [ [ A` splits at its `ESC` the way TS's own `StdinBuffer`
@@ -818,7 +849,7 @@ fn a_split_legacy_function_key_form_stays_ts_exact() {
             KeyModifiers::SHIFT
         ))]
     );
-    assert!(reports(&outputs).is_empty());
+    assert_eq!(reports(&outputs), [] as [mouse::MouseEvent; 0]);
 }
 
 /// `ESC` + a multi-byte character is the character with ALT: the guard reassembles the whole UTF-8

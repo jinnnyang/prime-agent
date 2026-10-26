@@ -86,7 +86,7 @@ fn flush_rows_write_crlf_and_keep_zone_markers() {
     // No rows: no output.
     let mut empty = String::new();
     write_flush_rows(&mut empty, &[]);
-    assert!(empty.is_empty());
+    assert_eq!(empty, "");
 }
 
 pub(crate) fn options(selection: ModelSelection) -> InteractiveOptions {
@@ -212,7 +212,7 @@ fn the_headless_settle_names_every_stuck_member() {
     // Everything clear: settled, no blockers.
     let settled = HeadlessSettle::default();
     assert!(settled.settled(), "the default snapshot is the open gate");
-    assert!(settled.blockers().is_empty());
+    assert_eq!(settled.blockers(), [] as [std::string::String; 0]);
     // One member at a time: each blocker names exactly its member.
     for stuck in [
         HeadlessSettle {

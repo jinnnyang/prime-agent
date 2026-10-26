@@ -839,9 +839,9 @@ mod tests {
             .expect("selector opens at zero terminal rows");
         let theme = Theme::builtin("prime", ColorMode::TrueColor);
         let rows = selector.render(&theme, 0, &KeybindingsManager::new());
-        assert!(!rows.is_empty());
+        assert_ne!(rows, [] as [std::vec::Vec<crate::Span>; 0]);
         let rows = selector.render(&theme, 1, &KeybindingsManager::new());
-        assert!(!rows.is_empty());
+        assert_ne!(rows, [] as [std::vec::Vec<crate::Span>; 0]);
     }
 
     #[test]
@@ -872,7 +872,7 @@ mod tests {
                 .expect("clean root survives a sibling cycle");
             assert_eq!(selector.current_leaf_id(), Some(leaf));
             let rows = selector.render(&theme, 60, &KeybindingsManager::new());
-            assert!(!rows.is_empty());
+            assert_ne!(rows, [] as [std::vec::Vec<crate::Span>; 0]);
         }
     }
 }

@@ -164,7 +164,7 @@ mod tests {
         for width in [0, 1, 2, 8, 80] {
             let mut output = WrapOutput::count();
             super::super::wrap_spans_into(&spans, width, &mut output);
-            assert!(output.current.is_empty());
+            assert_eq!(output.current, [] as [Span; 0]);
         }
     }
 }

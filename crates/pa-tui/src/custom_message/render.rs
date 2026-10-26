@@ -232,7 +232,7 @@ mod tests {
         };
         let rows = render_agent_message(&row, Detail::Overview, &theme(), 60, true);
         assert_eq!(rows.len(), 2, "{rows:?}");
-        assert!(rows[0].is_empty());
+        assert_eq!(rows[0], [] as [Span; 0]);
         let header = flat(&rows[1]);
         assert_eq!(
             header.trim_end(),
@@ -331,7 +331,7 @@ mod tests {
             content: "[bash-done pid:4371 exit:0]".to_string(),
         };
         let rows = render_shell_completion(&ok, Detail::Overview, &theme(), 60, true);
-        assert!(rows[0].is_empty());
+        assert_eq!(rows[0], [] as [Span; 0]);
         assert_eq!(
             flat(&rows[1]),
             " \u{2713} Background shell command finished"

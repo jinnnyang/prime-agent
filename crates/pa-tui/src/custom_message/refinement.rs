@@ -656,7 +656,7 @@ mod tests {
             edits: Vec::new(),
         };
         let rows = render_refinement_outcome(&row, Detail::Overview, &theme(), 60);
-        assert!(rows[0].is_empty());
+        assert_eq!(rows[0], [] as [Span; 0]);
         assert_eq!(flat(&rows[1]).trim_end(), " \u{25c6} Harness refined");
         assert_eq!(
             rows[1][1],
