@@ -941,6 +941,26 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
+    // A models.json custom provider carries the model, so the flow's
+    // post-auth model picker resolves without any network.
+    std::fs::write(
+        agent_dir.join("models.json"),
+        serde_json::json!({
+            "providers": {
+                "prime-inference": {
+                    "api": "openai-completions",
+                    "baseUrl": "http://127.0.0.1:9/v1",
+                    "models": [
+                        { "id": "mock-prime", "name": "Mock Prime", "api": "openai-completions",
+                          "baseUrl": "http://127.0.0.1:9/v1", "contextWindow": 128_000,
+                          "maxTokens": 4096 }
+                    ]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("write models.json");
     let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
@@ -995,9 +1015,13 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
     };
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![
+            down(),
             enter(),
             wait_render("Paste a Prime API key below:"),
             pa_tui::interactive::HeadlessStep::Type("faux-prime-key".to_string()),
+            enter(),
+            wait_render("Choose a model for this provider."),
+            down(),
             enter(),
             pa_tui::interactive::HeadlessStep::Submit("hi".to_string()),
             pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
@@ -1037,8 +1061,8 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
         "the completed flow marked onboarding shown"
     );
     assert!(
-        settings.get_agent_traces_enabled(),
-        "the Share answer persisted"
+        !settings.get_agent_traces_enabled(),
+        "traces stay off by default after the question was cut"
     );
     let auth = pa_core::auth::AuthStorage::create(&agent_dir);
     assert!(
@@ -1046,10 +1070,6 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
             .credential(pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID)
             .is_some(),
         "the Prime sign-in stored its credential"
-    );
-    assert!(
-        auth.get_all().credential("faux-key").is_some(),
-        "the provider login stored its key"
     );
     drop(supervisor);
 }
