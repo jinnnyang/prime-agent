@@ -3,6 +3,7 @@
 //! models, offline or not. Resolution returns fresh snapshots: a
 //! mid-session refresh never retargets the active model.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -165,10 +166,19 @@ impl ModelCatalog {
     pub fn resolve(&self, credentials: Option<&PrimeCredentials>) -> Vec<Model> {
         let base = match self.provider_cache.get(PUBLIC_SCOPE) {
             Some(remote) => {
-                // Step 1: validated last-good cache + the compiled offline
-                // Prime Inference entries (private/live entries come from
-                // the credentialed snapshot below).
+                // Step 1: validated last-good cache, the compiled entries for
+                // any provider the remote snapshot does not carry (a newer
+                // compiled provider must not wait on the published catalog),
+                // and the compiled offline Prime Inference entries.
+                let present: HashSet<String> =
+                    remote.iter().map(|model| model.provider.clone()).collect();
                 let mut models = remote;
+                models.extend(
+                    self.compiled
+                        .iter()
+                        .filter(|model| !present.contains(model.provider.as_str()))
+                        .cloned(),
+                );
                 for model in transports::prime_inference_offline_entries() {
                     models.push(model);
                 }
@@ -385,6 +395,57 @@ mod tests {
         let models = catalog.resolve(None);
         assert!(models.iter().any(|m| m.id == "cached-a"));
         assert!(!models.iter().any(|m| m.id == "bundled-a"), "cache wins");
+    }
+
+    #[test]
+    fn a_provider_the_cache_omits_comes_from_the_compiled_table() {
+        let dir = tempfile::tempdir().unwrap();
+        // The snapshot carries one provider only; every other compiled
+        // provider must still resolve (a provider added to the compiled
+        // table does not wait for the published catalog to list it).
+        let snapshot = json!({
+            "url": MODEL_CATALOG_URL,
+            "scope": PUBLIC_SCOPE,
+            "fetchedAt": 1,
+            "payload": serde_json::from_str::<serde_json::Value>(&models_json(&["cached-a"])).unwrap(),
+        });
+        std::fs::write(
+            dir.path().join(PROVIDER_CATALOG_CACHE_FILE),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let catalog =
+            ModelCatalog::with_bundled_dir(Some(dir.path().into()), Some(dir.path().into()));
+        let models = catalog.resolve(None);
+        let compiled = transports::compiled_models();
+        for provider in pa_ai::models_generated::get_providers() {
+            if provider == "anthropic" || provider == "prime-inference" {
+                // anthropic is the snapshot's own provider (the cache wins);
+                // prime-inference arrives through its own merge below.
+                continue;
+            }
+            assert!(
+                models.iter().any(|model| model.provider == provider),
+                "compiled provider {provider} missing from the resolved catalog"
+            );
+        }
+        assert_eq!(
+            models.iter().filter(|m| m.id == "cached-a").count(),
+            1,
+            "the cache's own entries are not duplicated"
+        );
+        // Every compiled model either survived (its provider is absent from
+        // the snapshot) or was replaced wholesale by the snapshot's set.
+        let anthropic_compiled = compiled
+            .iter()
+            .filter(|model| model.provider == "anthropic")
+            .count();
+        assert_eq!(
+            models.len(),
+            1 + compiled.len() - anthropic_compiled
+                + transports::prime_inference_offline_entries().len(),
+            "the snapshot's provider replaces its compiled set; the rest ride once"
+        );
     }
 
     #[test]
