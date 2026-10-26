@@ -382,7 +382,13 @@ async fn run_onboarding_flow(
                 }
 
                 // Auth succeeded: fetch the provider's models and show the model picker.
-                let models = session.fetch_models_for_provider(&provider_id).await;
+                let models = match session.fetch_models_for_provider(&provider_id).await {
+                    Ok(models) => models,
+                    Err(error) => {
+                        warn_model_catalog_failure(session, view, &error);
+                        continue;
+                    }
+                };
                 if models.is_empty() {
                     // No models returned — treat as complete without a model pick.
                     if let Err(error) = task.sink.mark_onboarding_complete() {
@@ -560,6 +566,22 @@ async fn run_provider_auth(
         }
     };
     Ok(success)
+}
+
+/// The signed-in provider's model list could not be loaded: say so and return to the provider
+/// picker, so the user can retry or continue without a model instead of finishing silently.
+fn warn_model_catalog_failure(
+    session: &mut SessionUi,
+    view: &mut AgentView,
+    error: &anyhow::Error,
+) {
+    view.push_entry(crate::chat::ChatEntry::Status {
+        text: format!(
+            "\u{26a0} The model list could not be loaded ({error}); pick a provider to try again."
+        ),
+        kind: crate::chat::StatusKind::Warning,
+    });
+    session.dirty = true;
 }
 
 /// A failed onboarding persistence write surfaces as a warning row in the session: the flow
