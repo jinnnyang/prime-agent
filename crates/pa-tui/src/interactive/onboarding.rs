@@ -211,6 +211,14 @@ async fn drive_onboarding_pane(
                 UiInput::Paste(text) => {
                     pane.handle_paste(&text);
                 }
+                UiInput::Mouse(event) => {
+                    if let Some(decision) = pane.handle_mouse(&event) {
+                        if let Some(task) = flow.take() {
+                            task.end().await;
+                        }
+                        return Ok((pane, PaneOutcome::Decision(decision)));
+                    }
+                }
                 // The headless plan completed while the pane owned the channel: mark the run loop's
                 // flag (the pane keeps driving until the channel closes or a decision ends it).
                 UiInput::HeadlessDone => *drive.headless_done = true,
@@ -256,7 +264,6 @@ async fn drive_onboarding_pane(
                 | UiInput::SubmitAndSettle { .. }
                 | UiInput::SettleIdle
                 | UiInput::InputChunkEnd
-                | UiInput::Mouse(_)
                 | UiInput::WaitIdle { .. }
                 | UiInput::ScrollTop
                 | UiInput::Resize => {}

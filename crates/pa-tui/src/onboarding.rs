@@ -97,6 +97,9 @@ pub struct OnboardingScreen {
     panel: Option<OnboardingPanel>,
     /// Render the two welcome paragraphs above a mounted Providers picker (welcome screen only).
     show_welcome_rows: bool,
+    /// Block row where the mounted panel's first line sits, recorded at render time so a mouse
+    /// report's row maps to the panel's own rows.
+    panel_top: usize,
 }
 
 impl Default for OnboardingScreen {
@@ -106,6 +109,7 @@ impl Default for OnboardingScreen {
             flow_started: true,
             panel: None,
             show_welcome_rows: false,
+            panel_top: 0,
         }
     }
 }
@@ -119,6 +123,7 @@ impl OnboardingScreen {
             flow_started: true,
             panel: Some(panel),
             show_welcome_rows: false,
+            panel_top: 0,
         }
     }
 
@@ -133,6 +138,7 @@ impl OnboardingScreen {
                 crate::onboarding_flow::ProviderPicker::welcome(options),
             )),
             show_welcome_rows: true,
+            panel_top: 0,
         }
     }
 
@@ -163,6 +169,26 @@ impl OnboardingScreen {
             return panel.handle_key(key, kb, osc_sink);
         }
         None
+    }
+
+    /// One mouse report over the block: a left press or wheel turn on the mounted picker. The
+    /// report's row is block-relative, so it maps into the picker's own rows first.
+    pub(crate) fn handle_mouse(
+        &mut self,
+        event: &crate::mouse::MouseEvent,
+    ) -> Option<OnboardingDecision> {
+        let Some(OnboardingPanel::Providers(picker)) = self.panel.as_mut() else {
+            return None;
+        };
+        if let Some(delta) = crate::mouse::wheel_scroll_delta(event) {
+            picker.handle_wheel(delta);
+            return None;
+        }
+        if event.button != crate::mouse::BUTTON_LEFT || !event.press || event.motion {
+            return None;
+        }
+        let row = usize::from(event.y).checked_sub(1 + self.panel_top)?;
+        picker.handle_mouse_click(row).map(OnboardingDecision::Pick)
     }
 
     /// One paste payload: the login dialog's field or the picker's search.
@@ -265,6 +291,7 @@ impl OnboardingScreen {
                 if self.show_welcome_rows {
                     lines.extend(welcome_rows(theme, width));
                 }
+                self.panel_top = lines.len();
                 lines.extend(panel.render(theme, width, kb));
             }
         }
@@ -276,6 +303,15 @@ impl OnboardingScreen {
             if lines.len() > height {
                 lines.drain(..lines.len() - height);
             }
+        }
+        if let Some(OnboardingPanel::Providers(picker)) = self.panel.as_ref() {
+            let chrome = crate::chrome::ChromeState {
+                tray_override: Some(picker.hint_text(kb)),
+                ..Default::default()
+            };
+            let tray = crate::chrome::render_tray(&chrome, theme, width);
+            lines.truncate(height.saturating_sub(1));
+            lines.push(tray);
         }
         while lines.len() < height {
             lines.push(Vec::new());
@@ -602,6 +638,83 @@ mod tests {
             ColorMode::TrueColor,
         );
         assert_eq!(highlight_wash(&theme), Color::Rgb(235, 235, 235));
+    }
+
+    /// A left click on a provider row inside the rendered block selects it, and Enter then answers
+    /// that provider; the row offset comes from the block's own layout, not a fixed line.
+    #[test]
+    fn a_click_on_a_provider_row_selects_it_inside_the_block() {
+        let theme = Theme::builtin("prime", ColorMode::TrueColor);
+        let options = (0..3)
+            .map(|i| crate::onboarding_flow::ProviderPickerOption {
+                id: format!("provider-{i}"),
+                name: format!("Provider {i}"),
+                connected: false,
+                available: true,
+            })
+            .collect();
+        let mut screen = OnboardingScreen::welcome(options);
+        // A tall pane: the welcome block and its logo take 22 rows before the provider list.
+        let rows = screen.render(&theme, 80, 40, &kb());
+        let row = rows
+            .iter()
+            .position(|line| {
+                line.iter()
+                    .map(|span| span.content.as_str())
+                    .collect::<String>()
+                    .contains("Provider 1")
+            })
+            .expect("provider 1 is rendered");
+        let click = crate::mouse::MouseEvent {
+            button: crate::mouse::BUTTON_LEFT,
+            x: 10,
+            y: u16::try_from(row + 1).expect("row fits"),
+            press: true,
+            motion: false,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert!(
+            screen.handle_mouse(&click).is_none(),
+            "a first click selects without confirming"
+        );
+        let mut sink = crate::clipboard::OscSink::Buffer(Vec::new());
+        let decision = screen.handle_key(&crate::keys::KeyId::from("enter"), &kb(), &mut sink);
+        assert!(
+            matches!(
+                decision,
+                Some(OnboardingDecision::Pick(
+                    crate::onboarding_flow::ProviderPick::Provider(ref id)
+                )) if id == "provider-1"
+            ),
+            "Enter answers the clicked provider"
+        );
+    }
+
+    /// The welcome block closes with the tray-style hint row: the keys that act on the list, the
+    /// same labels the agents view shows (`Enter/→ select`, `Esc/← later`).
+    #[test]
+    fn the_welcome_block_ends_with_the_key_hint_tray() {
+        let theme = Theme::builtin("prime", ColorMode::TrueColor);
+        let mut screen = OnboardingScreen::welcome(Vec::new());
+        let rows = screen.render(&theme, 100, 40, &kb());
+        let last: String = rows
+            .iter()
+            .rev()
+            .find(|line| !line.is_empty())
+            .expect("the tray row renders")
+            .iter()
+            .map(|span| span.content.as_str())
+            .collect();
+        assert!(
+            last.contains("Enter/→ select"),
+            "the hint names confirm: {last:?}"
+        );
+        assert!(
+            last.contains("Esc/← later"),
+            "the hint names the later exit: {last:?}"
+        );
     }
 
     /// The guarded arm: `onProgress` step chatter never renders on the onboarding block, the
