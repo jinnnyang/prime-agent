@@ -60,9 +60,9 @@ $ErrorActionPreference = 'Stop'
 # The publish-rendered defaults: the release pipeline copies this file to
 # <base>/install.ps1 with $DownloadBaseUrlDefault set to the R2 public base
 # and $ReleaseChannelDefault set to the channel; the repo-file default is
-# the same bucket-root base install-rust.sh carries, so the raw repo copy
-# installs out of the box too.
-$DownloadBaseUrlDefault = 'https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev'
+# this fork's GitHub releases base (install-rust.sh carries the same), so
+# the raw repo copy installs out of the box too.
+$DownloadBaseUrlDefault = 'https://github.com/jinnnyang/prime-agent/releases'
 $ReleaseChannelDefault = 'stable'
 
 # The installer-owned bookkeeping, initialized BEFORE any Fail can run
@@ -204,6 +204,21 @@ if ($baseUrl -notmatch '^https://') {
 }
 $baseUrl = $baseUrl.TrimEnd('/')
 if (@('stable', 'beta') -notcontains $channel) { Fail "unknown release channel: $channel (stable or beta)" }
+
+# THE GITHUB-RELEASES BASE (this fork's channel): a base ending in /releases
+# is served by GitHub's release-asset routes instead of the R2 bucket layout.
+# GitHub serves no bare `stable` pointer file, so the channel manifest itself
+# carries the version (`latest` redirect for stable, the rolling `nightly`
+# tag for beta) and the versioned assets live under download/<tag>/ with the
+# same names and the same SHA256SUMS the R2 prefix serves.
+$githubReleases = $baseUrl.EndsWith('/releases')
+$channelManifestName = if ($channel -eq 'beta') { 'beta.json' } else { 'latest.json' }
+$pointerUrl = if ($githubReleases) {
+    if ($channel -eq 'beta') { "$baseUrl/download/nightly/$channelManifestName" } else { "$baseUrl/latest/download/$channelManifestName" }
+} else {
+    "$baseUrl/$channel"
+}
+$manifestUrl = if ($githubReleases) { $pointerUrl } else { "$baseUrl/$channelManifestName" }
 # The prefix does not need to exist (a fresh Windows profile has no
 # $HOME\.local; the share/bin creation below makes it), but it must name
 # a directory path, not an existing FILE.
@@ -263,7 +278,6 @@ function ExpectedFileName($version, $platform) {
 # channels use the same pair reader and retry discipline.
 function Read-ChannelPair($channelName) {
     $pairPointer = $channelName
-    $pairManifestName = if ($channelName -eq 'beta') { 'beta.json' } else { 'latest.json' }
     $attempt = 0
     # The same quiet discipline as the download block: these reads are web
     # cmdlets too (their progress records flash the console); pinned here,
@@ -279,11 +293,21 @@ function Read-ChannelPair($channelName) {
             # The pointer is published bare ("1.2.3") but a `v`-prefixed
             # spelling is a valid historical form - normalize it (the manifest's
             # version is bare; the release prefix and the artifact names carry
-            # no extra `v` - the bots' finding).
-            $pairVersion = (Invoke-RestMethod -Uri "$baseUrl/$pairPointer" -UseBasicParsing).ToString().Trim().TrimStart('v')
-            if (-not $pairVersion) { Fail "could not resolve the latest $channelName version from $baseUrl/$pairPointer" }
-            $pairManifest = Invoke-RestMethod -Uri "$baseUrl/$pairManifestName" -UseBasicParsing
+            # no extra `v` - the bots' finding). On a GitHub releases base
+            # there is no separate pointer file: the manifest is the only
+            # write, so its version IS the pointer's and the pair can never
+            # disagree.
+            if (-not $githubReleases) {
+                $pairVersion = (Invoke-RestMethod -Uri "$baseUrl/$pairPointer" -UseBasicParsing).ToString().Trim().TrimStart('v')
+                if (-not $pairVersion) { Fail "could not resolve the latest $channelName version from $baseUrl/$pairPointer" }
+            }
+            $pairManifest = Invoke-RestMethod -Uri $manifestUrl -UseBasicParsing
             $pairManifestVersion = ($pairManifest.version).ToString().TrimStart('v')
+            if ($githubReleases) {
+                if (-not $pairManifestVersion) { Fail "could not resolve the latest $channelName version from $manifestUrl" }
+                $pairVersion = $pairManifestVersion
+                break
+            }
             if ($pairManifestVersion -eq $pairVersion) { break }
             $attempt += 1
             if ($attempt -gt 2) {
@@ -341,7 +365,14 @@ if ($versionPin) {
 }
 
 # --- the tarball + SHA256SUMS from the versioned release prefix ----------------
-$releasePrefix = "releases/v$version"
+# The prefix stays relative to the base so the messages and downloads read
+# the same on either layout: a stable cut has its own tag (v<version>), the
+# beta channel is the one rolling `nightly` tag.
+if ($githubReleases) {
+    $releasePrefix = if ($channel -eq 'beta') { 'download/nightly' } else { "download/v$version" }
+} else {
+    $releasePrefix = "releases/v$version"
+}
 $download = Join-Path ([IO.Path]::GetTempPath()) ("prime-agent-download-{0}" -f [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $download | Out-Null
 $script:primeAgentInstallScratch = $download
