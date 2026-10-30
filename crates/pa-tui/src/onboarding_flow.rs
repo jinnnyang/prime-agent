@@ -73,6 +73,8 @@ pub struct ProviderPicker {
     continue_label: String,
     /// The prompt line above the search field.
     prompt: String,
+    /// Picker-relative row -> selection index, recorded at render time for mouse clicks.
+    row_hits: std::cell::RefCell<Vec<(usize, usize)>>,
 }
 
 impl ProviderPicker {
@@ -85,6 +87,7 @@ impl ProviderPicker {
             scroll_top: 0,
             continue_label: CONTINUE_LABEL.to_string(),
             prompt: PROVIDERS_PROMPT.to_string(),
+            row_hits: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -107,6 +110,32 @@ impl ProviderPicker {
         picker
     }
 
+    /// One wheel turn: positive scrolls down, negative up. The selection moves and the viewport
+    /// follows it, as the arrow keys do.
+    pub fn handle_wheel(&mut self, delta: isize) {
+        let steps = delta.unsigned_abs();
+        let direction = if delta < 0 { -1 } else { 1 };
+        for _ in 0..steps {
+            self.move_selection(direction);
+        }
+    }
+
+    /// A left click on the row at `row` (picker-relative, as recorded by the last render). The
+    /// first click selects the row; a click on the already-selected row confirms it, like Enter.
+    pub fn handle_mouse_click(&mut self, row: usize) -> Option<ProviderPick> {
+        let index = self
+            .row_hits
+            .borrow()
+            .iter()
+            .find(|(line, _)| *line == row)
+            .map(|(_, index)| *index)?;
+        if self.selected == index {
+            return self.confirm_selection();
+        }
+        self.selected = index;
+        None
+    }
+
     /// One key id (the splash answers the exit keys first); `None` keeps the
     /// picker mounted.
     pub fn handle_key(&mut self, key: &str, kb: &KeybindingsManager) -> Option<ProviderPick> {
@@ -118,19 +147,10 @@ impl ProviderPicker {
             self.move_selection(1);
             return None;
         }
-        if kb.matches(key, "tui.select.confirm") {
-            if self.selected == 0 {
-                return Some(ProviderPick::Continue);
-            }
-            let filtered = self.filtered();
-            let item = filtered.get(self.selected - 1)?;
-            // The /login menu rule: an unavailable row's Enter is inert.
-            if !item.available {
-                return None;
-            }
-            return Some(ProviderPick::Provider(item.id.clone()));
+        if kb.matches(key, "tui.select.confirm") || self.arrow_confirms(key) {
+            return self.confirm_selection();
         }
-        if kb.matches(key, "tui.select.cancel") {
+        if kb.matches(key, "tui.select.cancel") || self.arrow_cancels(key) {
             return Some(ProviderPick::Cancelled);
         }
         self.search.handle_key(key, kb);
@@ -147,6 +167,54 @@ impl ProviderPicker {
         self.search.paste(&crate::menu_panel::scrub_controls(text));
         self.selected = self.selected.min(self.filtered().len());
         self.scroll_top = 0;
+    }
+
+    /// The tray hint: the confirm and back keys by their bound labels. The arrows join the
+    /// labels only while the query is empty, when they act as confirm and back.
+    #[must_use]
+    pub fn hint_text(&self, kb: &KeybindingsManager) -> String {
+        let arrows = self.search.value().is_empty();
+        let mut segments = Vec::new();
+        if let Some(enter) = kb.first_key("tui.select.confirm") {
+            let mut label = crate::keybindings::format_key_text(&enter);
+            if arrows {
+                label.push_str("/\u{2192}");
+            }
+            segments.push(format!("{label} select"));
+        }
+        if let Some(escape) = kb.first_key("tui.select.cancel") {
+            let mut label = crate::keybindings::format_key_text(&escape);
+            if arrows {
+                label.push_str("/\u{2190}");
+            }
+            segments.push(format!("{label} later"));
+        }
+        segments.join("   ")
+    }
+
+    /// Right confirms the selection, but only while the query is empty (a non-empty query keeps
+    /// the arrows on the search caret).
+    fn arrow_confirms(&self, key: &str) -> bool {
+        key == "right" && self.search.value().is_empty()
+    }
+
+    /// Left cancels only while the query is empty, like the model picker's back arrow.
+    fn arrow_cancels(&self, key: &str) -> bool {
+        key == "left" && self.search.value().is_empty()
+    }
+
+    /// Enter's action: the pinned continue row or the selected provider row.
+    fn confirm_selection(&self) -> Option<ProviderPick> {
+        if self.selected == 0 {
+            return Some(ProviderPick::Continue);
+        }
+        let filtered = self.filtered();
+        let item = filtered.get(self.selected - 1)?;
+        // The /login menu rule: an unavailable row's Enter is inert.
+        if !item.available {
+            return None;
+        }
+        Some(ProviderPick::Provider(item.id.clone()))
     }
 
     /// The query's matches: the lowercased trimmed query matches the label or the id.
@@ -191,6 +259,7 @@ impl ProviderPicker {
         let max_scroll = filtered.len().saturating_sub(VISIBLE_ROWS);
         let scroll_top = self.scroll_top.min(max_scroll);
         let row_width = self.row_width(width);
+        let mut hits: Vec<(usize, usize)> = Vec::new();
         let mut lines: Vec<Line> = vec![padded(width)];
         lines.push(indented(theme, width, &self.prompt, ThemeColor::Text));
         lines.push(padded(width));
@@ -203,6 +272,7 @@ impl ProviderPicker {
             PROVIDERS_SEARCH_PLACEHOLDER,
         ));
         lines.push(padded(width));
+        hits.push((lines.len(), 0));
         lines.push(Self::row(
             theme,
             width,
@@ -222,6 +292,7 @@ impl ProviderPicker {
             } else {
                 format!("{} · not available", item.name)
             };
+            hits.push((lines.len(), index + 1));
             lines.push(Self::row(
                 theme,
                 width,
@@ -234,6 +305,7 @@ impl ProviderPicker {
                 },
             ));
         }
+        *self.row_hits.borrow_mut() = hits;
         let remaining = filtered.len() - end;
         if remaining > 0 || scroll_top > 0 {
             let hint = if remaining > 0 {
@@ -520,6 +592,10 @@ mod tests {
         line.iter().map(|span| span.content.clone()).collect()
     }
 
+    fn row_of(rows: &[Line], label: &str) -> Option<usize> {
+        rows.iter().position(|row| row_text(row).contains(label))
+    }
+
     #[test]
     fn the_welcome_paragraphs_wrap_at_the_ts_width() {
         let rows = welcome_rows(&theme(), 80);
@@ -586,6 +662,108 @@ mod tests {
         assert!(
             picker.handle_key("enter", &kb()).is_none(),
             "Enter on an unavailable row is inert"
+        );
+    }
+
+    fn key_kb() -> KeybindingsManager {
+        KeybindingsManager::new()
+    }
+
+    #[test]
+    fn right_arrow_confirms_like_enter_when_the_search_is_empty() {
+        let mut picker = ProviderPicker::new(options(1));
+        let kb = key_kb();
+        picker.handle_key("down", &kb);
+        assert_eq!(
+            picker.handle_key("right", &kb),
+            Some(ProviderPick::Provider("provider-0".to_string()))
+        );
+        let mut picker = ProviderPicker::welcome(options(1));
+        assert_eq!(
+            picker.handle_key("right", &kb),
+            Some(ProviderPick::Continue),
+            "Right on the pinned continue row confirms it"
+        );
+    }
+
+    #[test]
+    fn left_arrow_cancels_when_the_search_is_empty() {
+        let mut picker = ProviderPicker::welcome(options(1));
+        assert_eq!(
+            picker.handle_key("left", &key_kb()),
+            Some(ProviderPick::Cancelled)
+        );
+    }
+
+    #[test]
+    fn left_and_right_edit_the_query_while_it_has_text() {
+        let mut picker = ProviderPicker::welcome(options(3));
+        let kb = key_kb();
+        picker.handle_key("p", &kb);
+        assert_eq!(picker.handle_key("left", &kb), None, "Left moves the caret");
+        assert_eq!(
+            picker.handle_key("right", &kb),
+            None,
+            "Right moves the caret"
+        );
+        assert_eq!(picker.search.value(), "p", "the query is unchanged");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_viewport_and_moves_the_selection() {
+        let mut picker = ProviderPicker::welcome(options(10));
+        let kb = key_kb();
+        for _ in 0..8 {
+            picker.handle_wheel(1);
+        }
+        assert_eq!(
+            picker.handle_key("enter", &kb),
+            Some(ProviderPick::Provider("provider-7".to_string())),
+            "eight wheel-downs from the continue row select the eighth provider"
+        );
+        let mut picker = ProviderPicker::welcome(options(10));
+        for _ in 0..8 {
+            picker.handle_wheel(1);
+        }
+        let rows = picker.render(&theme(), 60);
+        let text: Vec<String> = rows.iter().map(row_text).collect();
+        assert!(
+            text.iter().any(|row| row.contains("Provider 7")),
+            "the selected row stays in the viewport: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|row| row.contains("Provider 0 ")),
+            "the first rows scrolled out: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_left_click_selects_the_row_under_the_pointer() {
+        let mut picker = ProviderPicker::welcome(options(3));
+        let kb = key_kb();
+        let rows = picker.render(&theme(), 60);
+        let row = row_of(&rows, "Provider 1").expect("row 1 is rendered");
+        assert_eq!(
+            picker.handle_mouse_click(row),
+            None,
+            "a first click selects"
+        );
+        assert_eq!(
+            picker.handle_key("enter", &kb),
+            Some(ProviderPick::Provider("provider-1".to_string())),
+            "the clicked row is the selection"
+        );
+    }
+
+    #[test]
+    fn a_second_click_on_the_selected_row_confirms_it() {
+        let mut picker = ProviderPicker::welcome(options(3));
+        let rows = picker.render(&theme(), 60);
+        let row = row_of(&rows, "Provider 0").expect("row 0 is rendered");
+        assert_eq!(picker.handle_mouse_click(row), None);
+        assert_eq!(
+            picker.handle_mouse_click(row),
+            Some(ProviderPick::Provider("provider-0".to_string()))
         );
     }
 

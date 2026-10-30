@@ -1161,6 +1161,117 @@ async fn a_failed_model_list_after_sign_in_warns_and_leaves_onboarding_open() {
     drop(supervisor);
 }
 
+/// Esc on the welcome block is "later": the flow ends without marking onboarding shown, so the
+/// next launch shows the welcome block again.
+#[tokio::test]
+async fn esc_on_the_welcome_block_leaves_onboarding_open_for_the_next_launch() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let agent_dir = dir.path().join("agent");
+    let session_dir = agent_dir.join("sessions");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    let supervisor = spawn_supervisor(dir.path());
+    let script = serde_json::json!({ "responses": [{ "text": "unused", "delayMs": 20 }] });
+    std::fs::write(
+        dir.path().join("script.json"),
+        serde_json::to_string(&script).expect("script json"),
+    )
+    .expect("script.json");
+
+    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    options.onboarding = Some(pa_tui::interactive::OnboardingTask {
+        sink: std::sync::Arc::new(FreshHomeOnboardingSink {
+            cwd: dir.path().to_path_buf(),
+            agent_dir: agent_dir.clone(),
+        }),
+        model_ready: std::sync::Arc::new(|| false),
+        current_model: None,
+        provider_auth: Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
+            std::sync::Arc::new(FullFlowProviderAuth {
+                agent_dir: agent_dir.clone(),
+                kill_daemon_after_login: None,
+            }),
+        )),
+    });
+    let plan = pa_tui::interactive::HeadlessPlan {
+        steps: vec![
+            pa_tui::interactive::HeadlessStep::WaitRender {
+                needle: "Continue without signing in".to_string(),
+                timeout_ms: 10_000,
+            },
+            pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        ],
+        width: 100,
+        height: 40,
+    };
+    run_headless_bounded(options, plan)
+        .await
+        .expect("the run ends on Esc");
+    let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
+    assert!(
+        !settings.get_onboarding_shown(),
+        "Esc is later: onboarding stays open for the next launch"
+    );
+    drop(supervisor);
+}
+
+/// Enter on "Continue without signing in" completes onboarding.
+#[tokio::test]
+async fn enter_on_continue_without_signing_in_completes_onboarding() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let agent_dir = dir.path().join("agent");
+    let session_dir = agent_dir.join("sessions");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    let supervisor = spawn_supervisor(dir.path());
+    let script = serde_json::json!({ "responses": [{ "text": "unused", "delayMs": 20 }] });
+    std::fs::write(
+        dir.path().join("script.json"),
+        serde_json::to_string(&script).expect("script json"),
+    )
+    .expect("script.json");
+
+    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    options.onboarding = Some(pa_tui::interactive::OnboardingTask {
+        sink: std::sync::Arc::new(FreshHomeOnboardingSink {
+            cwd: dir.path().to_path_buf(),
+            agent_dir: agent_dir.clone(),
+        }),
+        model_ready: std::sync::Arc::new(|| false),
+        current_model: None,
+        provider_auth: Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
+            std::sync::Arc::new(FullFlowProviderAuth {
+                agent_dir: agent_dir.clone(),
+                kill_daemon_after_login: None,
+            }),
+        )),
+    });
+    let plan = pa_tui::interactive::HeadlessPlan {
+        steps: vec![
+            pa_tui::interactive::HeadlessStep::WaitRender {
+                needle: "Continue without signing in".to_string(),
+                timeout_ms: 10_000,
+            },
+            pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        ],
+        width: 100,
+        height: 40,
+    };
+    run_headless_bounded(options, plan)
+        .await
+        .expect("the run completes on Enter");
+    let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
+    assert!(
+        settings.get_onboarding_shown(),
+        "Enter on Continue completes onboarding"
+    );
+    drop(supervisor);
+}
+
 #[tokio::test]
 async fn a_failed_completion_write_surfaces_a_warning_and_never_kills_the_run() {
     let dir = tempfile::TempDir::new().expect("temp dir");
