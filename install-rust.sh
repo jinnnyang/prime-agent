@@ -13,12 +13,14 @@
 # the filename is invisible to users; the command they type is what
 # changed.
 #
-# SOURCE: the R2-backed release channel (this repo file is the source the
-# release workflow uploads to the bucket as install.sh / install-beta.sh;
-# the channel pointers and manifests it reads - latest.json / beta.json,
-# the tarballs, SHA256SUMS - all come from the same download base). The
-# workflow-artifact bootstrap channel is retired; the user path never
-# touches GitHub.
+# SOURCE: a release download base — the R2-backed channel (the upstream
+# layout: <base>/stable, <base>/latest.json, <base>/releases/v<version>/)
+# or a GitHub releases base ending in /releases (this fork's default:
+# <base>/latest/download/latest.json, <base>/download/v<version>/). The two
+# layouts differ only in those URL spellings; the manifest, the tarball
+# names, and the SHA256SUMS are identical, so one download/verify/publish
+# path serves both. install.sh/install.ps1 in a bucket base are this same
+# file rendered.
 #
 # THE TYPESCRIPT TAKEOVER (this script is also the uninstall path for the
 # TS product — one installer owns the keyword's lifecycle):
@@ -124,14 +126,13 @@
 #                                  the payload at $PREFIX/share/prime-agent/)
 #   PRIME_AGENT_UV_BIN_DIR         uv install dir (default: ~/.local/bin)
 #
-# THE CHANNEL (the R2 form, the TS install.sh parity): the script reads
-# the channel pointer (<base>/stable or <base>/beta) for the version,
-# reads the channel manifest (<base>/latest.json or <base>/beta.json) for
-# this platform's artifact row, fetches the tarball + SHA256SUMS from
-# <base>/releases/v<version>/, and verifies the checksum before
-# extraction. NO GITHUB SURFACE anywhere in the user path: no gh, no
-# GITHUB_TOKEN, no workflow-artifact API — the download base is the
-# R2-backed domain, and everything the installer reads comes from it.
+# THE CHANNEL: the script reads the channel manifest (<base>/latest.json or
+# <base>/beta.json on an R2 base; <base>/latest/download/latest.json or
+# <base>/download/nightly/beta.json on a GitHub releases base) for the
+# version and this platform's artifact row, then fetches the tarball +
+# SHA256SUMS from the version's own prefix and verifies the checksum before
+# extraction. On an R2 base the bare <base>/stable (or /beta) pointer names
+# the version first; GitHub serves no such file, so the manifest supplies it.
 #
 # Usage: install-rust.sh [--update] — both entry points install the
 # channel's current version; the script is idempotent (a re-run replaces
@@ -156,9 +157,9 @@ set -eu
 # The publish-rendered defaults: the release pipeline copies this script
 # to <base>/install.sh with DOWNLOAD_BASE_URL_DEFAULT set to
 # vars.R2_PUBLIC_BASE_URL, and to <base>/install-beta.sh with the channel
-# default set to beta — the repo-file default IS the official domain, so
-# the raw repo copy installs out of the box too.
-DOWNLOAD_BASE_URL_DEFAULT="https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
+# default set to beta — the repo-file default IS a GitHub releases base
+# (this fork's), so the raw repo copy installs out of the box too.
+DOWNLOAD_BASE_URL_DEFAULT="https://github.com/jinnnyang/prime-agent/releases"
 RELEASE_CHANNEL_DEFAULT="stable"
 BASE_URL="${PRIME_AGENT_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
 CHANNEL="${PRIME_AGENT_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
@@ -864,10 +865,44 @@ esac
 fi
 BASE_URL="${BASE_URL%/}"
 
-# The channel pointer's one-line body (empty when the read fails).
+# THE GITHUB-RELEASES BASE (this fork's channel): a base ending in
+# /releases is served by GitHub's release-asset routes instead of the R2
+# bucket layout. GitHub has no bare `stable` pointer file (a release ref is
+# not a file route), so the channel manifest itself carries the version
+# (the `latest` redirect for stable, the rolling `nightly` tag for beta),
+# and the versioned assets live under download/<tag>/ with the same names
+# and the same SHA256SUMS the R2 prefix serves. Only the two URL variables
+# below differ — the download, checksum, and staging code is identical on
+# either base.
+case "$BASE_URL" in
+  */releases)
+    GITHUB_RELEASES=yes
+    if [ "$CHANNEL" = beta ]; then
+      POINTER_URL="${BASE_URL}/download/nightly/${CHANNEL_MANIFEST}"
+    else
+      POINTER_URL="${BASE_URL}/latest/download/${CHANNEL_MANIFEST}"
+    fi
+    # The manifest IS the pointer here (one file); the per-version assets
+    # ride GitHub's download/<tag>/ route instead of the R2 releases/ one.
+    MANIFEST_URL="$POINTER_URL"
+    ;;
+  *)
+    GITHUB_RELEASES=no
+    POINTER_URL="${BASE_URL}/${CHANNEL}"
+    MANIFEST_URL="${BASE_URL}/${CHANNEL_MANIFEST}"
+    ;;
+esac
+
+# The channel pointer's one-line body (empty when the read fails). On the
+# GitHub base the "pointer" is the manifest itself: one file, one write, so
+# there is no publish window for the caller's pair retry to resolve.
 read_channel_version() {
-  if fetch "${BASE_URL}/${CHANNEL}" "$dl/channel-pointer" 30; then
-    tr -d '[:space:]' < "$dl/channel-pointer"
+  if fetch "$POINTER_URL" "$dl/channel-pointer" 30; then
+    if [ "$GITHUB_RELEASES" = yes ]; then
+      sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dl/channel-pointer" | head -n 1
+    else
+      tr -d '[:space:]' < "$dl/channel-pointer"
+    fi
   fi
 }
 # The local modes (--rollback, --archive) already have their payload: the
@@ -898,7 +933,7 @@ else
 fi
 case "$VERSION" in
   ""|v)
-    die "could not resolve the latest ${CHANNEL} version from ${BASE_URL}/${CHANNEL}
+    die "could not resolve the latest ${CHANNEL} version from ${POINTER_URL}
 (set PRIME_AGENT_VERSION to pin an exact version, or check the network)"
     ;;
   *[!0-9A-Za-z.-]*)
@@ -1465,8 +1500,8 @@ if [ "$VERSION_PINNED" = "yes" ]; then
 else
 manifest_attempt=1
 while :; do
-  fetch "${BASE_URL}/${CHANNEL_MANIFEST}" "$dl/${CHANNEL_MANIFEST}" 30 \
-    || die "could not read the ${CHANNEL} channel manifest: ${BASE_URL}/${CHANNEL_MANIFEST} (3 attempts)"
+  fetch "$MANIFEST_URL" "$dl/${CHANNEL_MANIFEST}" 30 \
+    || die "could not read the ${CHANNEL} channel manifest: ${MANIFEST_URL} (3 attempts)"
   row_py="$dl/channel_row.py"
   cat > "$row_py" <<'ROW_PY'
 import json, sys
@@ -1496,11 +1531,11 @@ ROW_PY
            # PAIR once before refusing.
            sleep 1
            VERSION="$(read_channel_version)"
-           [ -n "$VERSION" ] || die "could not resolve the latest ${CHANNEL} version from ${BASE_URL}/${CHANNEL}"
+           [ -n "$VERSION" ] || die "could not resolve the latest ${CHANNEL} version from ${POINTER_URL}"
            say "installing prime-agent ${VERSION} from the ${CHANNEL} channel (${CHANNEL_PLATFORM})"
            continue
          fi
-         die "the ${CHANNEL} channel manifest is not usable: ${BASE_URL}/${CHANNEL_MANIFEST} (${manifest_err})"; }
+         die "the ${CHANNEL} channel manifest is not usable: ${MANIFEST_URL} (${manifest_err})"; }
   asset_name="$(printf '%s' "$row_json" | "$UVPY" -c 'import json,sys; print(json.load(sys.stdin)["file"])')"
   manifest_sha="$(printf '%s' "$row_json" | "$UVPY" -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')"
   case "$manifest_sha" in
@@ -1511,7 +1546,19 @@ done
 fi
 
 # --- the tarball + SHA256SUMS from the versioned release prefix -------------
-RELEASE_PREFIX="releases/v${VERSION#v}"
+# RELEASE_PREFIX stays a path relative to the base, so every message and
+# fetch below reads the same on either base.
+if [ "$GITHUB_RELEASES" = yes ]; then
+  # A stable cut has its own tag (v<version>); the beta channel is the one
+  # rolling `nightly` tag, so every beta version's assets live there.
+  if [ "$CHANNEL" = beta ]; then
+    RELEASE_PREFIX="download/nightly"
+  else
+    RELEASE_PREFIX="download/v${VERSION#v}"
+  fi
+else
+  RELEASE_PREFIX="releases/v${VERSION#v}"
+fi
 step_start "Downloading"
 fetch "${BASE_URL}/${RELEASE_PREFIX}/${asset_name}" "$dl/${asset_name}" 1800 bar \
   || die "could not download ${BASE_URL}/${RELEASE_PREFIX}/${asset_name} (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
