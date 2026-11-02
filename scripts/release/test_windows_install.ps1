@@ -212,6 +212,64 @@ try {
         if (-not (Test-Path (Join-Path $prefixB $entry))) { throw "the sh route's payload is missing $entry" }
     }
 
+    # 7. The uninstall exit: each route removes its own install, and each route
+    #    removes the OTHER route's install (the same layout and marker make the
+    #    pair interchangeable - the property that matters on a machine where one
+    #    toolchain is gone). No marked path may survive, and the shared session
+    #    store must never be touched.
+    $storeBefore = Test-Path (Join-Path $HOME '.prime\agent')
+    $uninstallPs1 = Join-Path $repo 'install.ps1'
+    $uninstallSh = Join-Path $repo 'install-rust.sh'
+    function Invoke-Uninstall($route, $target) {
+        $env:PRIME_AGENT_RUST_PREFIX = $target
+        if ($route -eq 'ps1') {
+            $env:PRIME_AGENT_UNINSTALL = '1'
+            & pwsh -File $uninstallPs1 2>&1 | Out-Null
+            $code = $LASTEXITCODE
+            $env:PRIME_AGENT_UNINSTALL = $null
+        } else {
+            & $bash $uninstallSh '--uninstall' 2>&1 | Out-Null
+            $code = $LASTEXITCODE
+        }
+        if ($code -ne 0) { throw "$route --uninstall failed on $target (exit $code)" }
+    }
+    function Assert-Removed($target) {
+        foreach ($leftover in @('share\prime-agent', 'bin\prime-agent', 'bin\prime-agent.cmd')) {
+            if (Test-Path (Join-Path $target $leftover)) {
+                throw "the uninstall left $leftover behind under $target"
+            }
+        }
+        if (Test-Path $target) {
+            $remaining = @(Get-ChildItem -LiteralPath $target -Force -ErrorAction SilentlyContinue)
+            if ($remaining.Count -gt 0) {
+                throw "the uninstall left $($remaining.Count) entry(ies) under $target"
+            }
+        }
+    }
+    # (a) each route removes what it installed
+    Invoke-Uninstall 'ps1' $prefixA
+    Assert-Removed $prefixA
+    Invoke-Uninstall 'sh' $prefixB
+    Assert-Removed $prefixB
+    # (b) the cross pairs: ps1-installed / sh-removed, and sh-installed / ps1-removed
+    foreach ($cross in @(
+            @{ Install = 'ps1'; Remove = 'sh' },
+            @{ Install = 'sh'; Remove = 'ps1' })) {
+        $crossPrefix = Join-Path $scratch ("cross-{0}" -f [Guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $crossPrefix | Out-Null
+        $env:PRIME_AGENT_RUST_PREFIX = $crossPrefix
+        if ($cross.Install -eq 'ps1') { & pwsh -File $uninstallPs1 2>&1 | Out-Null } else { & $bash $uninstallSh 2>&1 | Out-Null }
+        if ($LASTEXITCODE -ne 0) { throw "the cross install failed: $($cross.Install) into $crossPrefix" }
+        $crossExe = Join-Path $crossPrefix 'share\prime-agent\prime-agent.exe'
+        if (-not (Test-Path $crossExe)) { throw "the cross install published no payload under $crossPrefix" }
+        Invoke-Uninstall $cross.Remove $crossPrefix
+        Assert-Removed $crossPrefix
+    }
+    # The store is exactly what the uninstall must never touch.
+    if ($storeBefore -and -not (Test-Path (Join-Path $HOME '.prime\agent'))) {
+        throw 'the uninstall removed the shared session store (~/.prime/agent)'
+    }
+
     Write-Host "WIN_INSTALL_E2E ps1=$versionA sh=${versionB}: both routes installed the ${version} win32-x64 payload and answered --version"
 } finally {
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
