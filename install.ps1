@@ -262,7 +262,10 @@ if ($env:PRIME_AGENT_UNINSTALL -eq '1' -or $env:PRIME_AGENT_UNINSTALL_CHECK -eq 
         $launcherPath = Join-Path $unBin $name
         if (-not (Test-Path $launcherPath)) { continue }
         $owned = $false
-        try { $owned = (Get-Content -LiteralPath $launcherPath -TotalCount 4 -ErrorAction Stop) -join "`n" -match 'launcher written by install-rust\.sh' } catch { $owned = $false }
+        # The header is in the launcher's first lines. A whole-file read would
+        # match the shipped payload binary too (it EMBEDS this installer's text
+        # for the update funnel), which would delete a user's own build.
+        try { $owned = (Get-Content -LiteralPath $launcherPath -TotalCount 3 -ErrorAction Stop) -join "`n" -match 'launcher written by install-rust\.sh' } catch { $owned = $false }
         if ($owned) { [void]$targets.Add($launcherPath) }
         else { Write-Host "note: $launcherPath was not written by this installer; left in place" }
     }

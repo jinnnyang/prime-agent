@@ -1455,7 +1455,14 @@ if [ "$MODE" = uninstall ]; then
   done
   for launcher_path in "$launcher" "${bin_dir}/prime-agent.cmd" "${bin_dir}/prime-agent-rust"; do
     [ -e "$launcher_path" ] || [ -L "$launcher_path" ] || continue
-    if [ -L "$launcher_path" ] || grep -q 'launcher written by install-rust.sh' "$launcher_path" 2>/dev/null; then
+    # THE OWNERSHIP TEST IS LINE-LIMITED: the shipped payload binary EMBEDS
+    # this script's own text (the update funnel runs the copy bundled into the
+    # binary), so a whole-file grep marks any prime-agent binary as "a launcher
+    # this installer wrote" — and a user's own build at bin/prime-agent would
+    # be deleted. The launcher's header is in its first lines; a binary's copy
+    # of the string lives far past them.
+    if [ -L "$launcher_path" ] \
+       || head -n 3 "$launcher_path" 2>/dev/null | grep -q 'launcher written by install-rust.sh'; then
       add_target "$launcher_path"
     else
       note "! ${launcher_path} was not written by this installer; it was left in place"
