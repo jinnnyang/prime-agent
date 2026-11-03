@@ -1541,17 +1541,34 @@ UNINSTALL_LIST
   note "  the shared session store (sessions, auth, the Python kernel venv) — the"
   note "  user's data, shared with the TypeScript product. Remove it only if you"
   note "  want to lose those sessions:"
-  todo "rm -rf \"${PRESERVED_STORE}\""
+  # The printed command must run in the reader's shell: this script was
+  # reached from Git Bash OR from a Windows prompt, and a bare /c/Users path
+  # is nothing to the latter. The Windows arm prints the cygpath spelling and
+  # names both forms.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      note "  (Git Bash:)"
+      todo "rm -rf \"${PRESERVED_STORE}\""
+      note "  (PowerShell / cmd:)"
+      todo "Remove-Item -Recurse -Force \"$(cygpath -w "$PRESERVED_STORE")\""
+      ;;
+    *)
+      todo "rm -rf \"${PRESERVED_STORE}\""
+      ;;
+  esac
   if [ -d "${PREFIX}/share/prime-agent-legacy" ]; then
     note "kept: ${PREFIX}/share/prime-agent-legacy (the preserved TypeScript tree)"
   fi
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
       # The launcher dir on the Windows user PATH (the installer added it). The
-      # spelling printed is the Windows one; the removal is a PATH edit, and
-      # this script does not write the registry — the note names both routes.
+      # spelling must be the WINDOWS one — a user pasting "/c/Users/..." into
+      # the Environment Variables dialog gets nothing. cygpath is the tool that
+      # owns that translation (it ships with every shell this arm matches, and
+      # it also yields the drive-letter UPPER CASE Windows uses); sed was only
+      # ever an approximation of it and got the case wrong.
       note "next: remove this entry from your user PATH (Environment Variables):"
-      todo "$(printf '%s' "$bin_dir" | sed -e 's|^/\([a-zA-Z]\)/|\1:/|')"
+      todo "$(cygpath -w "$bin_dir")"
       ;;
     *)
       note "next: ${bin_dir} may still be on your PATH; remove the line the installer"
