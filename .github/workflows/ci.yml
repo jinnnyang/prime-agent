@@ -352,7 +352,12 @@ jobs:
           set -euo pipefail
           reference="${RUNNER_TEMP}/frame-ts-reference"
           mkdir -p "${reference}/package"
-          gh release download v0.9.8 --repo "${GITHUB_REPOSITORY}" \
+          # The TS reference is the UPSTREAM product's last TS release, not
+          # this repository's: v0.9.8 predates the Rust port and only exists
+          # on the org repo. ${GITHUB_REPOSITORY} resolves to whatever repo
+          # runs the workflow, so a fork (which publishes only Rust cuts) got
+          # a 404 and the whole shard failed before its tests ran.
+          gh release download v0.9.8 --repo "PrimeIntellect-ai/prime-agent" \
             --pattern prime-agent-0.9.8-linux-x64.tar.gz --dir "${reference}"
           archive="${reference}/prime-agent-0.9.8-linux-x64.tar.gz"
           echo "83fb09129bf78e3e60268212cd70932166591b15188caa70c1b0efbcc76235e2  ${archive}" | sha256sum --check

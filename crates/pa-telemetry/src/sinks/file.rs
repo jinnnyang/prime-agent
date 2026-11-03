@@ -98,7 +98,18 @@ impl FileSink {
     /// 0600 on unix; on other platforms the agent dir ACLs apply. The
     /// signature stays async for the shared call site; the non-unix arm
     /// is legitimately await-free (the ACLs carry the restriction).
-    #[cfg_attr(not(unix), allow(clippy::unused_async))]
+    ///
+    /// Both lint names are allowed because `unused_async_trait_impl` is
+    /// version-dependent: it exists as its own lint on the pinned 1.98.1
+    /// and was merged into `unused_async` by 1.96. The toolchain is pinned
+    /// by `rust-toolchain.toml`, so this file sees one clippy — the second
+    /// name is here for the older toolchains a contributor may still have
+    /// on PATH, and `rust-toolchain.toml` makes `cargo` pick the pinned one
+    /// regardless. See issue #4 for the history.
+    #[cfg_attr(
+        not(unix),
+        allow(clippy::unused_async, clippy::unused_async_trait_impl)
+    )]
     async fn set_private(&self) -> Result<()> {
         #[cfg(unix)]
         {
