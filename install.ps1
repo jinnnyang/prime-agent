@@ -38,6 +38,9 @@
 #   PRIME_AGENT_VERSION            pin an exact version
 #   PRIME_AGENT_RUST_PREFIX        install prefix (default: $HOME\.local)
 #   PRIME_AGENT_UV_BIN_DIR         uv install dir (default: $HOME\.local\bin)
+#   PRIME_AGENT_UNINSTALL          1 = remove this installer's payload (the
+#                                  exit the install path never had; the shared
+#                                  session store is never touched)
 #
 # Prerequisites: Windows 10+ (tar.exe and Get-FileHash ship with the OS;
 # the kernel's Python runtime bootstraps through uv on first session — the
@@ -60,9 +63,9 @@ $ErrorActionPreference = 'Stop'
 # The publish-rendered defaults: the release pipeline copies this file to
 # <base>/install.ps1 with $DownloadBaseUrlDefault set to the R2 public base
 # and $ReleaseChannelDefault set to the channel; the repo-file default is
-# the same bucket-root base install-rust.sh carries, so the raw repo copy
-# installs out of the box too.
-$DownloadBaseUrlDefault = 'https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev'
+# this fork's GitHub releases base (install-rust.sh carries the same), so
+# the raw repo copy installs out of the box too.
+$DownloadBaseUrlDefault = 'https://github.com/jinnnyang/prime-agent/releases'
 $ReleaseChannelDefault = 'stable'
 
 # The installer-owned bookkeeping, initialized BEFORE any Fail can run
@@ -204,10 +207,156 @@ if ($baseUrl -notmatch '^https://') {
 }
 $baseUrl = $baseUrl.TrimEnd('/')
 if (@('stable', 'beta') -notcontains $channel) { Fail "unknown release channel: $channel (stable or beta)" }
+
+# THE GITHUB-RELEASES BASE (this fork's channel): a base ending in /releases
+# is served by GitHub's release-asset routes instead of the R2 bucket layout.
+# GitHub serves no bare `stable` pointer file, so the channel manifest itself
+# carries the version (`latest` redirect for stable, the rolling `nightly`
+# tag for beta) and the versioned assets live under download/<tag>/ with the
+# same names and the same SHA256SUMS the R2 prefix serves.
+$githubReleases = $baseUrl.EndsWith('/releases')
+$channelManifestName = if ($channel -eq 'beta') { 'beta.json' } else { 'latest.json' }
+$pointerUrl = if ($githubReleases) {
+    if ($channel -eq 'beta') { "$baseUrl/download/nightly/$channelManifestName" } else { "$baseUrl/latest/download/$channelManifestName" }
+} else {
+    "$baseUrl/$channel"
+}
+$manifestUrl = if ($githubReleases) { $pointerUrl } else { "$baseUrl/$channelManifestName" }
 # The prefix does not need to exist (a fresh Windows profile has no
 # $HOME\.local; the share/bin creation below makes it), but it must name
 # a directory path, not an existing FILE.
 if (Test-Path $prefix -PathType Leaf) { Fail "the install prefix names an existing file: $prefix" }
+
+# --- uninstall (PRIME_AGENT_UNINSTALL=1) --------------------------------------
+# install-rust.sh parity: the exit the install path never had. Everything this
+# block removes is a file THIS installer wrote — the marked payload tree, the
+# rollback generation, and the launchers carrying the installer's own header
+# line. The shared session store (~\.prime\agent: sessions, auth, the Python
+# kernel venv) is NEVER touched: it is the user's data and both products read
+# it. Unowned files stay and are reported, never guessed at.
+if ($env:PRIME_AGENT_UNINSTALL -eq '1' -or $env:PRIME_AGENT_UNINSTALL_CHECK -eq '1') {
+    $unShare = Join-Path $prefix 'share\prime-agent'
+    $unBin = Join-Path $prefix 'bin'
+    $unMarker = Join-Path $unShare '.prime-agent-install'
+    $unExe = Join-Path $unShare 'prime-agent.exe'
+
+    # THE PLAN COMES FIRST: the daemon stop below is a side effect, so a
+    # plan-only run (PRIME_AGENT_UNINSTALL_CHECK=1, the sh script's knob) must
+    # never reach it - a check that killed a live daemon would be a diagnostic
+    # that changes the machine.
+    $targets = New-Object System.Collections.ArrayList
+    if (Test-Path $unShare -PathType Container) {
+        if (Test-Path $unMarker -PathType Leaf) {
+            [void]$targets.Add($unShare)
+        } else {
+            Write-Host "note: $unShare is not a marked prime-agent payload tree (no .prime-agent-install); left in place"
+        }
+    }
+    foreach ($generation in @('share\prime-agent.old', 'share\prime-agent-rust.old')) {
+        $genPath = Join-Path $prefix $generation
+        if ((Test-Path $genPath -PathType Container) -and (Test-Path (Join-Path $genPath '.prime-agent-install') -PathType Leaf)) {
+            [void]$targets.Add($genPath)
+        }
+    }
+    foreach ($name in @('prime-agent.cmd', 'prime-agent', 'prime-agent-rust')) {
+        $launcherPath = Join-Path $unBin $name
+        if (-not (Test-Path $launcherPath)) { continue }
+        $owned = $false
+        # The header is in the launcher's first lines. A whole-file read would
+        # match the shipped payload binary too (it EMBEDS this installer's text
+        # for the update funnel), which would delete a user's own build.
+        try { $owned = (Get-Content -LiteralPath $launcherPath -TotalCount 3 -ErrorAction Stop) -join "`n" -match 'launcher written by install-rust\.sh' } catch { $owned = $false }
+        if ($owned) { [void]$targets.Add($launcherPath) }
+        else { Write-Host "note: $launcherPath was not written by this installer; left in place" }
+    }
+    # A payload copy beside the launchers (an older install's shape): removed
+    # only when it is byte-identical to the marked tree's binary.
+    $binCopy = Join-Path $unBin 'prime-agent.exe'
+    if ((Test-Path $binCopy -PathType Leaf) -and (Test-Path $unExe -PathType Leaf)) {
+        $copyHash = (Get-FileHash -LiteralPath $binCopy -Algorithm SHA256).Hash
+        $treeHash = (Get-FileHash -LiteralPath $unExe -Algorithm SHA256).Hash
+        if ($copyHash -eq $treeHash) { [void]$targets.Add($binCopy) }
+    }
+
+    if ($env:PRIME_AGENT_UNINSTALL_CHECK -eq '1') {
+        foreach ($target in $targets) { Write-Output $target }
+        return
+    }
+
+    # The trusted stop: the marked tree's own binary (never a launcher, never a
+    # PATH lookup). It carries its own daemon endpoint (this product's Windows
+    # daemon is a named pipe), so one command reaches it.
+    if ((Test-Path $unMarker -PathType Leaf) -and (Test-Path $unExe -PathType Leaf)) {
+        & $unExe shutdown --force *> $null
+        if ($LASTEXITCODE -eq 0) {
+            Step-Ok 'stopped' 'the daemon answered the forced shutdown'
+        } else {
+            Write-Host 'note: no daemon answered the shutdown request (an idle machine has none)'
+        }
+    }
+
+    if ($targets.Count -eq 0) {
+        Write-Host "nothing to remove: no prime-agent install was found under $prefix"
+    } else {
+        $failed = @()
+        foreach ($target in $targets) {
+            try { Remove-Item -Recurse -Force -LiteralPath $target -ErrorAction Stop }
+            catch { $failed += $target }
+        }
+        # The installer's own bookkeeping (neither is a payload).
+        $lockDir = Join-Path (Join-Path $prefix 'share') '.prime-agent-install.lock.d'
+        Remove-Item -Recurse -Force $lockDir -ErrorAction SilentlyContinue
+        Remove-Item -Force (Join-Path (Join-Path $prefix 'share') '.prime-agent-install-generations') -ErrorAction SilentlyContinue
+        if ($failed.Count -gt 0) {
+            Step-Fail 'removing' "$($failed.Count) path(s) could not be removed"
+            foreach ($target in $failed) {
+                Write-Host "  could not remove ${target} (in use? stop the daemon and retry)"
+            }
+        } else {
+            Step-Ok 'removed' "$($targets.Count) path(s)"
+        }
+        # Empty prefix dirs go only when nothing else lives there (a prefix
+        # shared with other software keeps its directories).
+        foreach ($dir in @((Join-Path $prefix 'share'), $unBin, $prefix)) {
+            if ((Test-Path $dir -PathType Container) -and -not (Get-ChildItem -LiteralPath $dir -Force | Select-Object -First 1)) {
+                Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    # The PATH entry this installer added (the counterpart of the install's
+    # add; the same registry-kind discipline, so a %VAR%-carrying user Path
+    # keeps following its variables).
+    $pathKey = $null
+    try {
+        $pathKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        if ($pathKey) {
+            $raw = $pathKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            if ($pathKey.GetValueNames() -contains 'Path') { $kind = $pathKey.GetValueKind('Path') }
+            $kept = @(($raw -split ';') | Where-Object { $_ -and -not ($_.Trim().TrimEnd('\') -ieq $unBin.TrimEnd('\')) })
+            $newPath = $kept -join ';'
+            if ($newPath -ne $raw) {
+                if ($newPath) { $pathKey.SetValue('Path', $newPath, $kind) } else { $pathKey.DeleteValue('Path', $false) }
+                Write-Host "PATH: removed $unBin from the user PATH (new terminals pick it up)"
+            }
+        }
+    } catch {
+        Write-Host "note: could not remove the PATH entry from the user environment: $($_.Exception.Message)"
+        Write-Host "  remove this entry by hand: $unBin"
+    } finally {
+        if ($pathKey) { $pathKey.Close() }
+    }
+
+    $store = Join-Path $HOME '.prime\agent'
+    Write-Host ''
+    Write-Host "kept: $store"
+    Write-Host '  the shared session store (sessions, auth, the Python kernel venv) - the'
+    Write-Host "  user's data, shared with the TypeScript product. Remove it only if you"
+    Write-Host '  want to lose those sessions:'
+    Write-Host "    Remove-Item -Recurse -Force `"$store`""
+    return
+}
 
 # THE UV TARGET KNOB VALIDATES EARLY (the reviewer's finding): a bad value
 # must fail BEFORE any side effect - the daemon stop, the payload publish,
@@ -263,7 +412,6 @@ function ExpectedFileName($version, $platform) {
 # channels use the same pair reader and retry discipline.
 function Read-ChannelPair($channelName) {
     $pairPointer = $channelName
-    $pairManifestName = if ($channelName -eq 'beta') { 'beta.json' } else { 'latest.json' }
     $attempt = 0
     # The same quiet discipline as the download block: these reads are web
     # cmdlets too (their progress records flash the console); pinned here,
@@ -279,11 +427,21 @@ function Read-ChannelPair($channelName) {
             # The pointer is published bare ("1.2.3") but a `v`-prefixed
             # spelling is a valid historical form - normalize it (the manifest's
             # version is bare; the release prefix and the artifact names carry
-            # no extra `v` - the bots' finding).
-            $pairVersion = (Invoke-RestMethod -Uri "$baseUrl/$pairPointer" -UseBasicParsing).ToString().Trim().TrimStart('v')
-            if (-not $pairVersion) { Fail "could not resolve the latest $channelName version from $baseUrl/$pairPointer" }
-            $pairManifest = Invoke-RestMethod -Uri "$baseUrl/$pairManifestName" -UseBasicParsing
+            # no extra `v` - the bots' finding). On a GitHub releases base
+            # there is no separate pointer file: the manifest is the only
+            # write, so its version IS the pointer's and the pair can never
+            # disagree.
+            if (-not $githubReleases) {
+                $pairVersion = (Invoke-RestMethod -Uri "$baseUrl/$pairPointer" -UseBasicParsing).ToString().Trim().TrimStart('v')
+                if (-not $pairVersion) { Fail "could not resolve the latest $channelName version from $baseUrl/$pairPointer" }
+            }
+            $pairManifest = Invoke-RestMethod -Uri $manifestUrl -UseBasicParsing
             $pairManifestVersion = ($pairManifest.version).ToString().TrimStart('v')
+            if ($githubReleases) {
+                if (-not $pairManifestVersion) { Fail "could not resolve the latest $channelName version from $manifestUrl" }
+                $pairVersion = $pairManifestVersion
+                break
+            }
             if ($pairManifestVersion -eq $pairVersion) { break }
             $attempt += 1
             if ($attempt -gt 2) {
@@ -341,7 +499,14 @@ if ($versionPin) {
 }
 
 # --- the tarball + SHA256SUMS from the versioned release prefix ----------------
-$releasePrefix = "releases/v$version"
+# The prefix stays relative to the base so the messages and downloads read
+# the same on either layout: a stable cut has its own tag (v<version>), the
+# beta channel is the one rolling `nightly` tag.
+if ($githubReleases) {
+    $releasePrefix = if ($channel -eq 'beta') { 'download/nightly' } else { "download/v$version" }
+} else {
+    $releasePrefix = "releases/v$version"
+}
 $download = Join-Path ([IO.Path]::GetTempPath()) ("prime-agent-download-{0}" -f [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $download | Out-Null
 $script:primeAgentInstallScratch = $download

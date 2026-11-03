@@ -1,0 +1,1 @@
+- Removed installs are now supported: `install-rust.sh --uninstall` (and `PRIME_AGENT_UNINSTALL=1` for install.ps1) deletes the payload, the kept rollback generations, and the launchers the installer wrote, while leaving the shared session store in place.
