@@ -2,6 +2,10 @@
 name: codebase-health
 on:
   pull_request:
+    # main only: a feature branch's PR is checked where it will land, not on
+    # every intermediate target. An open PR does not re-bill when a branch is
+    # pushed whose base is another branch.
+    branches: [main]
 permissions:
   contents: read
 jobs:

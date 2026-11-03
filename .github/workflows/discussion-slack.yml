@@ -10,6 +10,8 @@ on:
         type: boolean
         default: true
   pull_request:
+    # main only: the notifier's own test run, keyed to where its source lands.
+    branches: [main]
     paths:
       - .github/workflows/discussion-slack.yml
       - .github/scripts/discussion-notifier/**
