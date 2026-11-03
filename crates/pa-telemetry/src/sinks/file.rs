@@ -98,7 +98,19 @@ impl FileSink {
     /// 0600 on unix; on other platforms the agent dir ACLs apply. The
     /// signature stays async for the shared call site; the non-unix arm
     /// is legitimately await-free (the ACLs carry the restriction).
-    #[cfg_attr(not(unix), allow(clippy::unused_async))]
+    ///
+    /// `unknown_lints` rides along because the two lint names are version
+    /// split: clippy 1.96 merged `unused_async_trait_impl` into
+    /// `unused_async` (4e536df25 dropped the old name on that evidence),
+    /// while the merge gate's pinned 1.98.1 still fires it as its own lint.
+    /// Naming both without this attribute fails the build on whichever
+    /// toolchain lacks one of them; naming one leaves the gate red on the
+    /// other. Both are allow-only, so the overlap is harmless.
+    #[allow(unknown_lints)]
+    #[cfg_attr(
+        not(unix),
+        allow(clippy::unused_async, clippy::unused_async_trait_impl)
+    )]
     async fn set_private(&self) -> Result<()> {
         #[cfg(unix)]
         {
