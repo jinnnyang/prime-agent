@@ -5,6 +5,10 @@ on:
     types: [opened, reopened]
   pull_request_target:
     types: [opened, reopened, ready_for_review]
+    # main only: the trust gate decides whether a PR may bill runners, so it
+    # runs where the PR lands. A branch targeting anything else is not a
+    # contribution to this repo's history.
+    branches: [main]
 
 permissions: {}
 

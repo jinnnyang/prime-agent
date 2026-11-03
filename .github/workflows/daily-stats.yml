@@ -15,6 +15,9 @@ on:
         type: boolean
         default: false
   pull_request:
+    # main only: this workflow runs its own test suite on its source files,
+    # so it belongs on the branch the source lands in.
+    branches: [main]
     paths:
       - .github/workflows/daily-stats.yml
       - scripts/daily_stats.py
