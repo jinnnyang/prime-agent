@@ -1214,15 +1214,13 @@ async fn esc_on_the_welcome_block_leaves_onboarding_open_for_the_next_launch() {
         !settings.get_onboarding_shown(),
         "Esc is later: onboarding stays open for the next launch"
     );
-    let mirror = std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
-        .expect("the telemetry mirror is written");
-    let completed: Vec<serde_json::Value> = mirror
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|event| event["name"] == "onboarding completed")
-        .collect();
-    assert_eq!(completed.len(), 1, "one unfinished outcome: {mirror}");
-    assert_eq!(completed[0]["properties"]["outcome"], "aborted");
+    // The telemetry side of this exit (`onboarding completed` with outcome
+    // `aborted`) is NOT asserted here: this test drives FreshHomeOnboardingSink,
+    // a double whose `onboarding_incomplete` is a no-op, and the repo's test
+    // env opts telemetry out — so a mirror assertion could only ever fail.
+    // The real sink's report is pinned by the in-crate
+    // `settings_sink_reports_an_aborted_flow_once`, which drives the product
+    // sink and asserts the written event.
     drop(supervisor);
 }
 

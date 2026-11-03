@@ -1,0 +1,1 @@
+- Turned `ci` green on `main` again: the `x86_64-pc-windows-gnu` clippy gate's `from_secs(60)` became `from_mins(1)`, the TS link-frame reference now downloads from the upstream repo that actually publishes `v0.9.8`, and a Windows-manage e2e no longer asserts telemetry through a double whose sink is a no-op.
