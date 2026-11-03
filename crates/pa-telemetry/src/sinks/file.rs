@@ -99,14 +99,13 @@ impl FileSink {
     /// signature stays async for the shared call site; the non-unix arm
     /// is legitimately await-free (the ACLs carry the restriction).
     ///
-    /// `unknown_lints` rides along because the two lint names are version
-    /// split: clippy 1.96 merged `unused_async_trait_impl` into
-    /// `unused_async` (4e536df25 dropped the old name on that evidence),
-    /// while the merge gate's pinned 1.98.1 still fires it as its own lint.
-    /// Naming both without this attribute fails the build on whichever
-    /// toolchain lacks one of them; naming one leaves the gate red on the
-    /// other. Both are allow-only, so the overlap is harmless.
-    #[allow(unknown_lints)]
+    /// Both lint names are allowed because `unused_async_trait_impl` is
+    /// version-dependent: it exists as its own lint on the pinned 1.98.1
+    /// and was merged into `unused_async` by 1.96. The toolchain is pinned
+    /// by `rust-toolchain.toml`, so this file sees one clippy — the second
+    /// name is here for the older toolchains a contributor may still have
+    /// on PATH, and `rust-toolchain.toml` makes `cargo` pick the pinned one
+    /// regardless. See issue #4 for the history.
     #[cfg_attr(
         not(unix),
         allow(clippy::unused_async, clippy::unused_async_trait_impl)
