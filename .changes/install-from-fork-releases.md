@@ -1,0 +1,1 @@
+- The installer now downloads releases from a GitHub release page: a download base ending in `/releases` reads `latest/download/latest.json` and the version's `download/v<version>/` assets instead of the R2 bucket layout.

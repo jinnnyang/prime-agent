@@ -13,12 +13,14 @@
 # the filename is invisible to users; the command they type is what
 # changed.
 #
-# SOURCE: the R2-backed release channel (this repo file is the source the
-# release workflow uploads to the bucket as install.sh / install-beta.sh;
-# the channel pointers and manifests it reads - latest.json / beta.json,
-# the tarballs, SHA256SUMS - all come from the same download base). The
-# workflow-artifact bootstrap channel is retired; the user path never
-# touches GitHub.
+# SOURCE: a release download base — the R2-backed channel (the upstream
+# layout: <base>/stable, <base>/latest.json, <base>/releases/v<version>/)
+# or a GitHub releases base ending in /releases (this fork's default:
+# <base>/latest/download/latest.json, <base>/download/v<version>/). The two
+# layouts differ only in those URL spellings; the manifest, the tarball
+# names, and the SHA256SUMS are identical, so one download/verify/publish
+# path serves both. install.sh/install.ps1 in a bucket base are this same
+# file rendered.
 #
 # THE TYPESCRIPT TAKEOVER (this script is also the uninstall path for the
 # TS product — one installer owns the keyword's lifecycle):
@@ -124,14 +126,13 @@
 #                                  the payload at $PREFIX/share/prime-agent/)
 #   PRIME_AGENT_UV_BIN_DIR         uv install dir (default: ~/.local/bin)
 #
-# THE CHANNEL (the R2 form, the TS install.sh parity): the script reads
-# the channel pointer (<base>/stable or <base>/beta) for the version,
-# reads the channel manifest (<base>/latest.json or <base>/beta.json) for
-# this platform's artifact row, fetches the tarball + SHA256SUMS from
-# <base>/releases/v<version>/, and verifies the checksum before
-# extraction. NO GITHUB SURFACE anywhere in the user path: no gh, no
-# GITHUB_TOKEN, no workflow-artifact API — the download base is the
-# R2-backed domain, and everything the installer reads comes from it.
+# THE CHANNEL: the script reads the channel manifest (<base>/latest.json or
+# <base>/beta.json on an R2 base; <base>/latest/download/latest.json or
+# <base>/download/nightly/beta.json on a GitHub releases base) for the
+# version and this platform's artifact row, then fetches the tarball +
+# SHA256SUMS from the version's own prefix and verifies the checksum before
+# extraction. On an R2 base the bare <base>/stable (or /beta) pointer names
+# the version first; GitHub serves no such file, so the manifest supplies it.
 #
 # Usage: install-rust.sh [--update] — both entry points install the
 # channel's current version; the script is idempotent (a re-run replaces
@@ -141,6 +142,10 @@
 # install-rust.sh --archive <path> publishes a local release archive
 # instead of a channel download (`prime-agent update --rollback` and
 # `--archive` run the copy of this script bundled into the binary).
+# install-rust.sh --uninstall is the exit the install path never had: it
+# removes the marked payload tree, the kept rollback generations, and the
+# launchers this installer wrote, and leaves the shared session store
+# (~/.prime/agent) alone.
 #
 # PREREQUISITES: curl + sh (+ the network for the download). The installer
 # needs a Python for its own scripting steps (the store guard's realpath,
@@ -156,9 +161,9 @@ set -eu
 # The publish-rendered defaults: the release pipeline copies this script
 # to <base>/install.sh with DOWNLOAD_BASE_URL_DEFAULT set to
 # vars.R2_PUBLIC_BASE_URL, and to <base>/install-beta.sh with the channel
-# default set to beta — the repo-file default IS the official domain, so
-# the raw repo copy installs out of the box too.
-DOWNLOAD_BASE_URL_DEFAULT="https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
+# default set to beta — the repo-file default IS a GitHub releases base
+# (this fork's), so the raw repo copy installs out of the box too.
+DOWNLOAD_BASE_URL_DEFAULT="https://github.com/jinnnyang/prime-agent/releases"
 RELEASE_CHANNEL_DEFAULT="stable"
 BASE_URL="${PRIME_AGENT_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
 CHANNEL="${PRIME_AGENT_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
@@ -196,6 +201,12 @@ Options:
   --archive <path>
               install a local prime-agent-<version>-<platform>.tar.gz
               release archive instead of downloading from the channel
+  --uninstall remove this installer's payload, the kept rollback
+              generations, and the launchers it wrote. The shared session
+              store (~/.prime/agent — sessions, auth, the kernel venv) is
+              never touched; the ending prints the one command that clears
+              it. Reads nothing from the network: works offline, and on a
+              machine whose install is broken.
 Output:
   stderr      the title, one line per step, warnings with the command that
               fixes them, and the ending; on a terminal an animated banner,
@@ -222,6 +233,9 @@ Environment:
                                  (its name, tar, payload, and version) and
                                  exit without publishing (the same
                                  pre-flight for the archive route)
+  PRIME_AGENT_UNINSTALL_CHECK    1 = with --uninstall, print every path the
+                                 removal WOULD delete and exit without
+                                 touching anything
 USAGE
 }
 
@@ -277,6 +291,10 @@ fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --update) ;;
+    --uninstall)
+      [ "$MODE" = archive ] && die "--uninstall and --archive are exclusive"
+      [ "$MODE" = rollback ] && die "--uninstall and --rollback are exclusive"
+      MODE="uninstall" ;;
     --rollback)
       [ "$MODE" = archive ] && die "--rollback and --archive are exclusive"
       MODE="rollback" ;;
@@ -864,10 +882,44 @@ esac
 fi
 BASE_URL="${BASE_URL%/}"
 
-# The channel pointer's one-line body (empty when the read fails).
+# THE GITHUB-RELEASES BASE (this fork's channel): a base ending in
+# /releases is served by GitHub's release-asset routes instead of the R2
+# bucket layout. GitHub has no bare `stable` pointer file (a release ref is
+# not a file route), so the channel manifest itself carries the version
+# (the `latest` redirect for stable, the rolling `nightly` tag for beta),
+# and the versioned assets live under download/<tag>/ with the same names
+# and the same SHA256SUMS the R2 prefix serves. Only the two URL variables
+# below differ — the download, checksum, and staging code is identical on
+# either base.
+case "$BASE_URL" in
+  */releases)
+    GITHUB_RELEASES=yes
+    if [ "$CHANNEL" = beta ]; then
+      POINTER_URL="${BASE_URL}/download/nightly/${CHANNEL_MANIFEST}"
+    else
+      POINTER_URL="${BASE_URL}/latest/download/${CHANNEL_MANIFEST}"
+    fi
+    # The manifest IS the pointer here (one file); the per-version assets
+    # ride GitHub's download/<tag>/ route instead of the R2 releases/ one.
+    MANIFEST_URL="$POINTER_URL"
+    ;;
+  *)
+    GITHUB_RELEASES=no
+    POINTER_URL="${BASE_URL}/${CHANNEL}"
+    MANIFEST_URL="${BASE_URL}/${CHANNEL_MANIFEST}"
+    ;;
+esac
+
+# The channel pointer's one-line body (empty when the read fails). On the
+# GitHub base the "pointer" is the manifest itself: one file, one write, so
+# there is no publish window for the caller's pair retry to resolve.
 read_channel_version() {
-  if fetch "${BASE_URL}/${CHANNEL}" "$dl/channel-pointer" 30; then
-    tr -d '[:space:]' < "$dl/channel-pointer"
+  if fetch "$POINTER_URL" "$dl/channel-pointer" 30; then
+    if [ "$GITHUB_RELEASES" = yes ]; then
+      sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dl/channel-pointer" | head -n 1
+    else
+      tr -d '[:space:]' < "$dl/channel-pointer"
+    fi
   fi
 }
 # The local modes (--rollback, --archive) already have their payload: the
@@ -898,7 +950,7 @@ else
 fi
 case "$VERSION" in
   ""|v)
-    die "could not resolve the latest ${CHANNEL} version from ${BASE_URL}/${CHANNEL}
+    die "could not resolve the latest ${CHANNEL} version from ${POINTER_URL}
 (set PRIME_AGENT_VERSION to pin an exact version, or check the network)"
     ;;
   *[!0-9A-Za-z.-]*)
@@ -1222,7 +1274,11 @@ fi
 # other path the machine is missing the one prerequisite the installer
 # cannot provide for itself, but the Windows rollback and archive run
 # entirely without one (see the download attempt's gate above).
+# The interpreter gate exempts the modes that never parse anything: the
+# Windows rollback/archive (see above), and --uninstall on every platform
+# (it removes files this installer wrote — no manifest, no JSON, no Python).
 if [ -z "$UVPY" ] \
+   && [ "$MODE" != "uninstall" ] \
    && { [ "$WINDOWS" != "yes" ] || [ "$MODE" = "channel" ]; }; then
   die "the installer could not obtain a Python runtime, which it needs
 for its scripting steps (the store guard, the artifact handling). Install
@@ -1244,7 +1300,7 @@ fi
 # round-trips the path through Windows form (realpath answers C:\...),
 # which would make every later MSYS-form comparison miss; the sh-native
 # physical_path() keeps the guard's spellings consistent end to end.
-if [ "$WINDOWS" = "yes" ]; then
+if [ "$WINDOWS" = "yes" ] || [ -z "$UVPY" ]; then
   PRESERVED_STORE="$(physical_path "${HOME}/.prime/agent")"
 else
   PRESERVED_STORE="$("$UVPY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${HOME}/.prime/agent")"
@@ -1303,7 +1359,12 @@ esac
 # is appended before the substitution and removed after — ${out%X}
 # strips exactly the one appended X, so a path ending in X (or in X then
 # a newline) comes through byte-true.
-if [ "$WINDOWS" = "yes" ]; then
+if [ "$WINDOWS" = "yes" ] || [ -z "$UVPY" ]; then
+  # physical_path is the sh-native resolver (cd + pwd -P, no coreutils): the
+  # Windows spelling rule above, and the fallback for a machine with no
+  # interpreter at all — --uninstall must run there, and it is the only mode
+  # that reaches this line without a Python (the store guard and the prefix
+  # resolution both need the resolved spelling).
   PREFIX="$(physical_path "$PREFIX")X"
 else
   PREFIX="$("$UVPY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]) + "X")' "$PREFIX")"
@@ -1322,7 +1383,12 @@ case "$PREFIX" in
 '*) die "PRIME_AGENT_RUST_PREFIX must not contain a newline: the rollback record is newline-delimited (resolved: ${PREFIX})" ;;
 esac
 guard_preserved "$PREFIX" "${PREFIX}/share" "${PREFIX}/bin"
-mkdir -p "${PREFIX}/share" "${PREFIX}/bin"
+# An uninstall CREATES nothing: the prefix dirs it inspects may legitimately be
+# absent (an install that never completed), and creating them just to remove
+# them would leave empty directories behind on a clean machine.
+if [ "$MODE" != "uninstall" ]; then
+  mkdir -p "${PREFIX}/share" "${PREFIX}/bin"
+fi
 # The guard must also see THROUGH symlinked child roots: a ${PREFIX}/share or
 # ${PREFIX}/bin that is a symlink into the shared store would otherwise let
 # the publish write under it while every lexical check passes. Resolving the
@@ -1332,7 +1398,7 @@ mkdir -p "${PREFIX}/share" "${PREFIX}/bin"
 # through C:\... spelling the MSYS-form comparison can never match, which
 # would silently disarm this child-root guard (the bots' finding).
 for install_root in "${PREFIX}/share" "${PREFIX}/bin"; do
-  if [ "$WINDOWS" = "yes" ]; then
+  if [ "$WINDOWS" = "yes" ] || [ -z "$UVPY" ]; then
     guard_preserved "$(physical_path "$install_root")"
   else
     guard_preserved "$("$UVPY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$install_root")"
@@ -1348,6 +1414,170 @@ lock_link="${PREFIX}/share/.prime-agent-install.lock"
 legacy_lock="${PREFIX}/share/.prime-agent-rust-install.lock"
 generations_record="${PREFIX}/share/.prime-agent-install-generations"
 guard_preserved "$share_dir" "$launcher" "$old_layout_dir" "$legacy_dir" "$lock_link"
+
+# --- --uninstall: remove this installer's payload, never the store ------------
+# The install path had no exit, so this is it. Everything it removes is a file
+# THIS installer wrote: the marked payload tree, the rollback generations, and
+# the launchers carrying the installer's own header line. The shared session
+# store (~/.prime/agent — sessions, auth, kernel venv) is NEVER touched: it is
+# the user's data and both products read it, so an uninstall that deleted it
+# would destroy work rather than remove software. The unowned files stay too
+# (an unrelated prime-agent command is preserved aside by the install; it is
+# restored by hand, never guessed at), and the removal REPORTS every leftover
+# with the one command that clears it.
+# Runs before every channel/download/install step: an uninstall reads nothing
+# from the network and needs no Python, so it works offline on a machine whose
+# install is broken. PRIME_AGENT_UNINSTALL_CHECK=1 prints the plan and stops
+# (the rollback check's shape), so a caller can ask what WOULD go.
+if [ "$MODE" = uninstall ]; then
+  # THE PLAN COMES FIRST, and the check knob stops here: the daemon stop below
+  # is a side effect, so a plan-only run must never reach it (a --check that
+  # killed a live daemon would be a diagnostic that changes the machine).
+  #
+  # The removal plan: every path this installer may have written. A path is
+  # removed only when it carries proof (the payload marker, the launcher's
+  # header, or the generations record's exact entry) — an unmarked path is
+  # someone else's file and is reported, never deleted.
+  uninstall_targets=""
+  add_target() { uninstall_targets="${uninstall_targets}${uninstall_targets:+
+}$1"; }
+  if [ -d "$share_dir" ] && [ -f "${share_dir}/.prime-agent-install" ]; then
+    add_target "$share_dir"
+  elif [ -e "$share_dir" ]; then
+    note "! ${share_dir} is not a marked prime-agent payload tree"
+    note "  (no .prime-agent-install); it was left in place — move it aside by hand"
+  fi
+  for gen_dir in "${PREFIX}"/share/prime-agent.old.* "${PREFIX}"/share/prime-agent.old \
+                 "${PREFIX}"/share/prime-agent-rust.old.*; do
+    [ -d "$gen_dir" ] || continue
+    [ -f "${gen_dir}/.prime-agent-install" ] || continue
+    add_target "$gen_dir"
+  done
+  for launcher_path in "$launcher" "${bin_dir}/prime-agent.cmd" "${bin_dir}/prime-agent-rust"; do
+    [ -e "$launcher_path" ] || [ -L "$launcher_path" ] || continue
+    # THE OWNERSHIP TEST IS LINE-LIMITED: the shipped payload binary EMBEDS
+    # this script's own text (the update funnel runs the copy bundled into the
+    # binary), so a whole-file grep marks any prime-agent binary as "a launcher
+    # this installer wrote" — and a user's own build at bin/prime-agent would
+    # be deleted. The launcher's header is in its first lines; a binary's copy
+    # of the string lives far past them.
+    if [ -L "$launcher_path" ] \
+       || head -n 3 "$launcher_path" 2>/dev/null | grep -q 'launcher written by install-rust.sh'; then
+      add_target "$launcher_path"
+    else
+      note "! ${launcher_path} was not written by this installer; it was left in place"
+    fi
+  done
+  # A payload COPY left beside the launchers by an older install (the .exe in
+  # bin): removed only when it is byte-identical to the marked tree's binary,
+  # so a user's own build at that name survives.
+  bin_copy="${bin_dir}/${BINARY_NAME}"
+  if [ -f "$bin_copy" ] && [ -f "${share_dir}/${BINARY_NAME}" ] && cmp -s "$bin_copy" "${share_dir}/${BINARY_NAME}"; then
+    add_target "$bin_copy"
+  fi
+
+  if [ "${PRIME_AGENT_UNINSTALL_CHECK:-}" = "1" ]; then
+    printf '%s\n' "$uninstall_targets"
+    exit 0
+  fi
+
+  # The trusted stop: the marked tree's OWN binary (never a launcher, never a
+  # PATH lookup). It carries its own daemon endpoint, so one command stops the
+  # daemon on every platform — this product's Windows daemon is a named pipe
+  # and its unix daemon a socket, and neither name is this script's business.
+  if [ -f "${share_dir}/.prime-agent-install" ] && [ -x "${share_dir}/${BINARY_NAME}" ]; then
+    step_start "Stopping the daemon"
+    if "${share_dir}/${BINARY_NAME}" shutdown --force >/dev/null 2>&1; then
+      step_ok "Stopped" "the daemon answered the forced shutdown"
+    else
+      step_clear
+      note "! no daemon answered the shutdown request (an idle machine has none)."
+      note "  If one is running, stop it by hand: prime-agent shutdown --force"
+    fi
+  fi
+
+  if [ -z "$uninstall_targets" ]; then
+    step_clear
+    say "nothing to remove: no prime-agent install was found under ${PREFIX}"
+  else
+    step_start "Removing"
+    uninstall_failed=""
+    while IFS= read -r remove_path; do
+      [ -n "$remove_path" ] || continue
+      # rm -rf handles the payload tree, a symlink launcher, and a regular
+      # launcher alike; -f never prompts (the paths are all confirmed above).
+      if ! rm -rf "$remove_path" 2>/dev/null; then
+        uninstall_failed="${uninstall_failed}${remove_path}
+"
+      fi
+    done <<UNINSTALL_LIST
+$uninstall_targets
+UNINSTALL_LIST
+    # The installer's own bookkeeping: the lock (a crashed run may leave the
+    # directory form) and the generations record. Neither is a payload.
+    rm -f "$lock_link" 2>/dev/null || true
+    rm -rf "${PREFIX}/share/.prime-agent-install.lock.d" 2>/dev/null || true
+    rm -f "$generations_record" 2>/dev/null || true
+    if [ -n "$uninstall_failed" ]; then
+      step_fail "Removing" "some files could not be removed"
+      printf '%s' "$uninstall_failed" | while IFS= read -r failed_path; do
+        [ -n "$failed_path" ] || continue
+        note "! could not remove ${failed_path} (in use? stop the daemon and retry)"
+      done
+    else
+      step_ok "Removed" "$(printf '%s' "$uninstall_targets" | grep -c .) path(s)"
+    fi
+    # Empty prefix dirs go too — but only when nothing else lives there (a
+    # prefix shared with other software keeps its dirs; rmdir refuses non-empty).
+    rmdir "${PREFIX}/share" "${PREFIX}/bin" "${PREFIX}" 2>/dev/null || true
+  fi
+
+  # The leftovers an uninstall deliberately does NOT remove, each with the
+  # exact command (or the reason it stays). No silent gaps. These ride stderr
+  # directly (dim/note/todo), the install ending's own channel: `say` goes to
+  # fd 3, which a bare run leaves closed.
+  printf '\n' >&2
+  note "kept: ${PRESERVED_STORE}"
+  note "  the shared session store (sessions, auth, the Python kernel venv) — the"
+  note "  user's data, shared with the TypeScript product. Remove it only if you"
+  note "  want to lose those sessions:"
+  # The printed command must run in the reader's shell: this script was
+  # reached from Git Bash OR from a Windows prompt, and a bare /c/Users path
+  # is nothing to the latter. The Windows arm prints the cygpath spelling and
+  # names both forms.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      note "  (Git Bash:)"
+      todo "rm -rf \"${PRESERVED_STORE}\""
+      note "  (PowerShell / cmd:)"
+      todo "Remove-Item -Recurse -Force \"$(cygpath -w "$PRESERVED_STORE")\""
+      ;;
+    *)
+      todo "rm -rf \"${PRESERVED_STORE}\""
+      ;;
+  esac
+  if [ -d "${PREFIX}/share/prime-agent-legacy" ]; then
+    note "kept: ${PREFIX}/share/prime-agent-legacy (the preserved TypeScript tree)"
+  fi
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # The launcher dir on the Windows user PATH (the installer added it). The
+      # spelling must be the WINDOWS one — a user pasting "/c/Users/..." into
+      # the Environment Variables dialog gets nothing. cygpath is the tool that
+      # owns that translation (it ships with every shell this arm matches, and
+      # it also yields the drive-letter UPPER CASE Windows uses); sed was only
+      # ever an approximation of it and got the case wrong.
+      note "next: remove this entry from your user PATH (Environment Variables):"
+      todo "$(cygpath -w "$bin_dir")"
+      ;;
+    *)
+      note "next: ${bin_dir} may still be on your PATH; remove the line the installer"
+      note "  printed for your shell profile if you added it."
+      ;;
+  esac
+  ui_stop
+  exit 0
+fi
 
 # --- --rollback: the newest kept generation ------------------------------------
 # The rollback source is the newest generation in the generations record (the
@@ -1465,8 +1695,8 @@ if [ "$VERSION_PINNED" = "yes" ]; then
 else
 manifest_attempt=1
 while :; do
-  fetch "${BASE_URL}/${CHANNEL_MANIFEST}" "$dl/${CHANNEL_MANIFEST}" 30 \
-    || die "could not read the ${CHANNEL} channel manifest: ${BASE_URL}/${CHANNEL_MANIFEST} (3 attempts)"
+  fetch "$MANIFEST_URL" "$dl/${CHANNEL_MANIFEST}" 30 \
+    || die "could not read the ${CHANNEL} channel manifest: ${MANIFEST_URL} (3 attempts)"
   row_py="$dl/channel_row.py"
   cat > "$row_py" <<'ROW_PY'
 import json, sys
@@ -1496,11 +1726,11 @@ ROW_PY
            # PAIR once before refusing.
            sleep 1
            VERSION="$(read_channel_version)"
-           [ -n "$VERSION" ] || die "could not resolve the latest ${CHANNEL} version from ${BASE_URL}/${CHANNEL}"
+           [ -n "$VERSION" ] || die "could not resolve the latest ${CHANNEL} version from ${POINTER_URL}"
            say "installing prime-agent ${VERSION} from the ${CHANNEL} channel (${CHANNEL_PLATFORM})"
            continue
          fi
-         die "the ${CHANNEL} channel manifest is not usable: ${BASE_URL}/${CHANNEL_MANIFEST} (${manifest_err})"; }
+         die "the ${CHANNEL} channel manifest is not usable: ${MANIFEST_URL} (${manifest_err})"; }
   asset_name="$(printf '%s' "$row_json" | "$UVPY" -c 'import json,sys; print(json.load(sys.stdin)["file"])')"
   manifest_sha="$(printf '%s' "$row_json" | "$UVPY" -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')"
   case "$manifest_sha" in
@@ -1511,7 +1741,19 @@ done
 fi
 
 # --- the tarball + SHA256SUMS from the versioned release prefix -------------
-RELEASE_PREFIX="releases/v${VERSION#v}"
+# RELEASE_PREFIX stays a path relative to the base, so every message and
+# fetch below reads the same on either base.
+if [ "$GITHUB_RELEASES" = yes ]; then
+  # A stable cut has its own tag (v<version>); the beta channel is the one
+  # rolling `nightly` tag, so every beta version's assets live there.
+  if [ "$CHANNEL" = beta ]; then
+    RELEASE_PREFIX="download/nightly"
+  else
+    RELEASE_PREFIX="download/v${VERSION#v}"
+  fi
+else
+  RELEASE_PREFIX="releases/v${VERSION#v}"
+fi
 step_start "Downloading"
 fetch "${BASE_URL}/${RELEASE_PREFIX}/${asset_name}" "$dl/${asset_name}" 1800 bar \
   || die "could not download ${BASE_URL}/${RELEASE_PREFIX}/${asset_name} (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
