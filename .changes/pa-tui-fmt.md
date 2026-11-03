@@ -1,0 +1,1 @@
+- Restored the workspace to `cargo fmt` cleanliness after the ipython tool-card tests landed with four over-width `render(...)` call sites.
