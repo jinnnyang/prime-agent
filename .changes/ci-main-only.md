@@ -1,1 +1,0 @@
-- CI now runs only for `main`: the four workflows whose `pull_request` trigger had no branch filter (codebase-health, contribution-gate, daily-stats, discussion-slack) are pinned to `branches: [main]`, so a PR targeting any other branch bills no runner minutes.
