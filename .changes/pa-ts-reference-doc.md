@@ -1,0 +1,1 @@
+- Documented that `PA_TS_REFERENCE`'s differential test silently skips (reporting `ok`) whenever the TS source checkout is absent — including in CI, which never provides one — so the base-URL parity assertion has never actually run.
