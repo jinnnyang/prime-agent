@@ -1,0 +1,1 @@
+- The TS link-frame reference now tries this repository's re-hosted archive before the upstream release, so the parity shard keeps running once this fork detaches from the org repo. Both routes are pinned by the same SHA-256, so the fallback cannot change what gets compared.
