@@ -325,7 +325,7 @@ def write_tar(stage_dir, output):
     with tarfile.open(output) as tar:
         listed = sorted(name for name in tar.getnames() if name.strip())
     expected = sorted(
-        str(path.relative_to(stage_dir))
+        path.relative_to(stage_dir).as_posix()
         for path in stage_dir.rglob("*")
         if path.is_file() or path.is_dir()
     )
