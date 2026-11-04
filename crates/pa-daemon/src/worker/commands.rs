@@ -92,7 +92,7 @@ impl Worker {
             "worker_deliver_message" => self.handle_worker_deliver_message(payload),
             "update_snapshot" => self.handle_update_snapshot(),
             "kill" => self.handle_kill(payload).await,
-            "shutdown" => self.handle_shutdown().await,
+            "shutdown" => self.handle_shutdown(payload).await,
             "rename" => self.handle_rename("rename", payload),
             "set_session_name" => self.handle_rename("set_session_name", payload),
             "mark_anthropic_warning_shown" => self.handle_mark_anthropic_warning_shown(),
@@ -327,6 +327,7 @@ impl Worker {
         {
             let mut core = self.core.lock().unwrap();
             core.abort_requested = true;
+            core.turn_cancelled = true;
             // The queue parks and a plain prompt is rejected until a
             // resume site fires.
             core.queued_input_suspended = true;
@@ -474,7 +475,7 @@ impl Worker {
             Some(_) => {
                 return response_failure(None, "get_messages", "History branch changed", None);
             }
-            None => store.leaf_id.clone().unwrap_or_default(),
+            None => store.leaf_id().unwrap_or_default().to_string(),
         };
         let Some(mut rows) = store.transcript_page(&page) else {
             return response_failure(None, "get_messages", "History branch changed", None);
@@ -519,10 +520,11 @@ impl Worker {
             Err(error) => return response_failure(None, NAME, &error.to_string(), None),
         };
         let read = || {
-            let core = self.core.lock().unwrap();
+            let mut core = self.core.lock().unwrap();
+            let core = &mut *core;
             let slice = core
                 .store
-                .as_ref()
+                .as_mut()
                 .and_then(|store| query.read(store, &core.running_tool_calls));
             slice
         };
@@ -685,6 +687,7 @@ impl Worker {
         }
         let mut core = self.core.lock().unwrap();
         core.abort_requested = true;
+        core.turn_cancelled = true;
         // The same TS `requestAbort()` suspension as the bare `abort`.
         core.queued_input_suspended = true;
         drop(core);
@@ -774,6 +777,7 @@ impl Worker {
         {
             let mut core = self.core.lock().unwrap();
             core.abort_requested = true;
+            core.turn_cancelled = true;
             core.steering.clear();
             core.follow_up.clear();
         }
