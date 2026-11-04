@@ -1,0 +1,1 @@
+- Documented that three e2e shards failed together on a commit touching only CI config, with all four assertions being deadline timeouts — the same commit's neighbouring runs were green.
