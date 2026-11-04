@@ -464,14 +464,15 @@ mod tests {
         let error = AnthropicCallbackServer::start("the-state").unwrap_err();
         assert!(error.contains("port 53692"), "{error}");
         // The in-use failure is OS-phrased (EADDRINUSE on Unix,
-        // WSAEADDRINUSE on Windows).
+        // WSAEADDRINUSE on Windows); the numeric code survives a
+        // localized message, the English text does not.
         #[cfg(unix)]
-        assert!(error.contains("Address already in use"), "{error}");
+        {
+            let code = if cfg!(target_os = "macos") { 48 } else { 98 };
+            assert!(error.contains(&format!("os error {code}")), "{error}");
+        }
         #[cfg(windows)]
-        assert!(
-            error.contains("Only one usage of each socket address"),
-            "{error}"
-        );
+        assert!(error.contains("os error 10048"), "{error}");
         drop(blocker);
     }
 
