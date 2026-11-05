@@ -545,9 +545,16 @@ try {
 
 # --- verify the checksum (the release prefix's sums, cross-checked with the
 # --- manifest's row: two independent reads of the same digest) ------------------
-$sumsLine = Get-Content -LiteralPath $sumsPath | Where-Object { $_ -match "  $expectedFile$" } | Select-Object -First 1
+# The separator is TEXT ("  ") or BINARY (" *"): GNU sha256sum's own -c
+# accepts both, and a Windows-hosted sha256sum defaults to binary mode -
+# the shape the v0.10.3 sums shipped in (the sums file is the producer's
+# artifact, this script only reads it). The name is escaped, so a `.` in
+# it never acts as a regex wildcard.
+$sumsLine = Get-Content -LiteralPath $sumsPath |
+    Where-Object { $_ -match "^[0-9a-fA-F]{64} [ *]$([regex]::Escape($expectedFile))$" } |
+    Select-Object -First 1
 if (-not $sumsLine) { Fail "SHA256SUMS in $releasePrefix has no line for $expectedFile" }
-$sumsSha = ($sumsLine -split '\s+')[0]
+$sumsSha = ($sumsLine -split '\s+')[0].ToLower()
 if (-not $versionPin -and $sumsSha -ne $row.sha256) { Fail "checksum mismatch between the channel manifest and SHA256SUMS for ${expectedFile}: the channel is inconsistent" }
 $actualSha = (Get-FileHash -LiteralPath $tarball -Algorithm SHA256).Hash.ToLower()
 if ($actualSha -ne $sumsSha) { Fail "checksum mismatch for ${expectedFile}: the download is corrupt" }
