@@ -137,6 +137,31 @@ fn the_uname_map_refuses_unsupported_machines_with_the_matrix() {
     }
 }
 
+/// Both installers' sums row readers accept BOTH coreutils markers.
+/// `sha256sum` emits `digest *file` (binary mode) on macOS and under
+/// Git-Bash/MSYS, and the v0.10.3 release shipped exactly that shape; the
+/// readers matched the text form only (`digest  file`), so every Windows
+/// install refused with "SHA256SUMS ... has no line for ...". GNU
+/// `sha256sum -c` accepts both markers, so the readers must too.
+#[test]
+fn both_installers_read_binary_and_text_sums_rows() {
+    let ps1 = std::fs::read_to_string(repo_root().join("install.ps1")).expect("read install.ps1");
+    assert!(
+        ps1.contains("\"^[0-9a-fA-F]{64} [ *]$([regex]::Escape($expectedFile))$\""),
+        "install.ps1 must match either separator, and the name literally, never as a regex"
+    );
+    let sh =
+        std::fs::read_to_string(repo_root().join("install-rust.sh")).expect("read install-rust.sh");
+    assert!(
+        sh.contains(r#"($2 == f || $2 == "*" f)"#),
+        "install-rust.sh must accept the binary marker beside the text separator"
+    );
+    assert!(
+        !sh.contains("grep \"  ${asset_name}\\$\""),
+        "the text-only grep is the bug: it refuses a `*`-marked sums row"
+    );
+}
+
 /// install.ps1's Windows contract: the win32-x64 channel row (the TS
 /// `NATIVE_PLATFORMS` spelling the manifest reader keeps), the ARM64
 /// refusal, and the two render lines the release pipeline's publish step

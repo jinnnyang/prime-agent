@@ -1,0 +1,1 @@
+- Fixed the installers rejecting a release whose `SHA256SUMS` rows use the coreutils binary marker (`digest *file`), which broke every Windows install of 0.10.3 with "SHA256SUMS ... has no line for ...".

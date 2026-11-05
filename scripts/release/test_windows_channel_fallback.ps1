@@ -32,7 +32,10 @@ $channel = Join-Path $scratch 'channel'
 $releaseDir = Join-Path $channel "releases\v$betaVersion"
 New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 Move-Item -LiteralPath $artifact -Destination $releaseDir
-Set-Content -LiteralPath (Join-Path $releaseDir 'SHA256SUMS') -Value "$artifactSha  $artifactFile"
+# The published v0.10.3 sums shipped in coreutils BINARY mode
+# (`digest *file`, what sha256sum emits on macOS and under Git-Bash). Both
+# markers are legal, so the fixtures use the shape that broke the field.
+Set-Content -LiteralPath (Join-Path $releaseDir 'SHA256SUMS') -Value "$artifactSha *$artifactFile"
 Set-Content -LiteralPath (Join-Path $channel 'stable') -Value $stableVersion -NoNewline
 Set-Content -LiteralPath (Join-Path $channel 'latest.json') -Value ('{"version": "v' + $stableVersion + '", "binaries": [], "binaries_v2": []}')
 Set-Content -LiteralPath (Join-Path $channel 'beta') -Value $betaVersion -NoNewline
