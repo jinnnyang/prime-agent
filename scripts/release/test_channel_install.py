@@ -28,7 +28,12 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="prime-channel-install-") as temporary:
             root = Path(temporary)
             feed = root / "feed"
-            publish_archive(feed, args.archive)
+            checksums = publish_archive(feed, args.archive)
+            # The published v0.10.3 sums shipped in coreutils BINARY mode
+            # (`digest *file`, what sha256sum emits on macOS and under
+            # Git-Bash/MSYS). Both markers are legal and the installer must
+            # read either, so the gate hands it the shape that broke.
+            checksums.write_text(f"{digest(args.archive)} *{args.archive.name}\n")
             shutil.copyfile(args.installer, feed / "install.sh")
             (feed / "stable").write_text(version + "\n")
             (feed / "latest.json").write_text(json.dumps({"version": version, "binaries": [

@@ -1772,7 +1772,12 @@ step_ok "Downloaded" "$(ui_mb "$(wc -c < "$asset" | tr -d ' ')")"
 # the known same-channel limitation; the signed-asset design is the
 # graduation path in RELEASE_SECURITY.md.)
 step_start "Verifying"
-line="$(grep "  ${asset_name}\$" "$dl/SHA256SUMS" || true)"
+# The separator is TEXT (`"  "`) or BINARY (`" *"`): GNU sha256sum's own
+# `-c` accepts both, and a Windows-hosted sha256sum defaults to binary
+# mode, which is exactly how the v0.10.3 sums were generated (the sums
+# file is a producer's artifact, not this script's). Match the name
+# exactly, so `.` never acts as a regex wildcard.
+line="$(awk -v f="${asset_name}" '$1 ~ /^[0-9a-f]{64}$/ && ($2 == f || $2 == "*" f) { print; exit }' "$dl/SHA256SUMS")"
 [ -n "$line" ] || die "SHA256SUMS in ${RELEASE_PREFIX} has no line for ${asset_name}"
 sums_sha="${line%% *}"
 if [ -n "$manifest_sha" ]; then
