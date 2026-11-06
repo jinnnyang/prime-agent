@@ -72,6 +72,7 @@ pub fn file_id_from_file(file: &File) -> Option<FileId> {
 }
 
 #[cfg(unix)]
+#[must_use]
 pub fn file_id_from_file(file: &File) -> Option<FileId> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata().ok()?;
