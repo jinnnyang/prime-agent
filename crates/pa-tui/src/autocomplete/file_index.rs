@@ -407,6 +407,7 @@ fn plan_batch(
     }
     let mut rels: BTreeSet<String> = BTreeSet::new();
     let mut replaced: BTreeSet<String> = BTreeSet::new();
+    let mut created_or_removed: BTreeSet<String> = BTreeSet::new();
     for event in batch.iter().flatten() {
         if event.need_rescan() {
             return Update::Rebuild;
@@ -446,16 +447,26 @@ fn plan_batch(
             ) {
                 replaced.insert(rel.clone());
             }
+            // Presence changes (not a Windows-style directory Modify(Any) noise
+            // event) decide a repository boundary.
+            if matches!(
+                event.kind,
+                notify::EventKind::Create(_) | notify::EventKind::Remove(_)
+            ) {
+                created_or_removed.insert(rel.clone());
+            }
             rels.insert(rel);
         }
     }
     // Creating/removing a repository boundary changes whether gitignore
     // applies. A worktree's .git file may also change its gitdir pointer.
-    // Directory metadata alone does not change the boundary, and ordinary
-    // Git activity can emit those events. Check before pruning .git contents.
+    // Directory metadata does not change the boundary: Windows emits
+    // Modify(Any) on the .git directory from ordinary enumeration noise and
+    // ordinary Git activity can emit those events. Check before pruning .git
+    // contents.
     if rels.iter().any(|rel| {
         rel.rsplit('/').next() == Some(GIT_DIR)
-            && (replaced.contains(rel) || base.join(rel).is_file())
+            && (created_or_removed.contains(rel) || base.join(rel).is_file())
     }) {
         return Update::Rebuild;
     }

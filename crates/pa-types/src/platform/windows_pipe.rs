@@ -244,10 +244,18 @@ mod tests {
             .await
             .err()
             .expect("a live pipe name must not be rebindable");
-        assert!(
-            error.to_string().to_lowercase().contains("denied"),
-            "first-instance conflict, got: {error}"
-        );
+        // A locale renders ERROR_ACCESS_DENIED in its own language; the code
+        // (os error 5) is the portable shape of the conflict.
+        let os_code = error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+            .or_else(|| {
+                let source: Option<&(dyn std::error::Error + 'static)> = error.source();
+                source
+                    .and_then(|source| source.downcast_ref::<std::io::Error>())
+                    .and_then(std::io::Error::raw_os_error)
+            });
+        assert_eq!(os_code, Some(5), "first-instance conflict, got: {error}");
     }
 
     #[test]

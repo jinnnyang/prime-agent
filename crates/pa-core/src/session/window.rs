@@ -1016,6 +1016,8 @@ pub(super) fn update_snapshot(snapshot: &mut Snapshot, entry: &FileEntry) {
     }
 }
 
-#[cfg(test)]
+// The generation certificate anchors on unix inode identity; the store is
+// unix-only (`open` short-circuits `Ok(None)` elsewhere), so the battery is too.
+#[cfg(all(test, unix))]
 #[path = "window_tests.rs"]
 mod tests;

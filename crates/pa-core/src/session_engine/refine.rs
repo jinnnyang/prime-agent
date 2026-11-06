@@ -1144,6 +1144,7 @@ Reviewer instructions: record it"
         );
     }
 
+    #[cfg(unix)] // the gated windowed-leg battery inlines the oracle's body
     fn oracle_fixture() -> String {
         let mut rows = vec![
             serde_json::json!({"type":"session","id":"s","version":3,"cwd":"/tmp","timestamp":"2026-01-01T00:00:00Z"}),
@@ -1158,7 +1159,9 @@ Reviewer instructions: record it"
         rows.into_iter().map(|row| row.to_string() + "\n").collect()
     }
 
-    /// One captured refiner request.
+    /// One captured refiner request (the gated windowed-leg battery's sink
+    /// record; unused on non-unix where that test is compiled out).
+    #[cfg(unix)]
     #[derive(Debug, Clone, PartialEq)]
     struct CapturedRequest {
         max_tokens: u64,
@@ -1168,6 +1171,9 @@ Reviewer instructions: record it"
 
     /// Byte-identical across every extraction path; the leased-window leg
     /// deletes the file first, so a hidden fallback fails.
+    // The windowed legs require the windowed store (unix inode certificates;
+    // elsewhere the store short-circuits to full-history on non-unix).
+    #[cfg(unix)]
     #[tokio::test]
     async fn refine_request_is_identical_across_extraction_paths() {
         use std::io::Write as _;
