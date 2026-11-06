@@ -508,17 +508,6 @@ pub fn refresh_incident_notice_state(
     // real rotation is still caught when the file id changes on a later read.
     let previous = state.notice.clone();
     state.entries = merge_incident_windowed_entries(&state.entries, &parsed, since_ms);
-    if std::env::var("PAINCPROBE").is_ok() {
-        eprintln!(
-            "INCPROBE2 state_id={:?} parsed_n={} parsed={:?}",
-            state.log_file_id,
-            parsed.len(),
-            parsed
-                .iter()
-                .map(|p| (&p.msg, p.time_ms))
-                .collect::<Vec<_>>()
-        );
-    }
     let notices = derive_incident_notices(&state.entries, now_ms);
     state.notice = select_incident_notice(
         &notices

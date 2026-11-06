@@ -446,7 +446,8 @@ mod decorate_tests {
             "the print-mode line quotes too: {printed}"
         );
         // The embedded-quote escape: an id carrying a single quote still round-trips as ONE
-        // argument.
+        // argument. The POSIX single-quote escape form only holds for the
+        // POSIX shell; the win32 quoting helper answers a different form.
         #[cfg(not(windows))]
         assert_eq!(
             quoted_resume_arg("it's"),

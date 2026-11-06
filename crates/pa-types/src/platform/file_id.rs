@@ -114,4 +114,33 @@ mod tests {
             "distinct files"
         );
     }
+
+    /// The rotation contract the incident-notice detection keys on: a rename
+    /// keeps the identity, a recreated path is a fresh generation.
+    #[test]
+    fn a_rename_keeps_the_identity_and_a_replacement_releases_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("rotated.log");
+        std::fs::write(&path, b"generation 1").expect("write");
+        let file = std::fs::File::open(&path).expect("open");
+        let id1 = file_id_from_file(&file).expect("identity");
+        drop(file);
+
+        let renamed = dir.path().join("rotated.1.log");
+        std::fs::rename(&path, &renamed).expect("rename");
+        let file = std::fs::File::open(&renamed).expect("open renamed");
+        assert_eq!(
+            id1,
+            file_id_from_file(&file).expect("identity"),
+            "a rename keeps the identity"
+        );
+
+        std::fs::write(&path, b"generation 2").expect("recreate");
+        let file = std::fs::File::open(&path).expect("open recreated");
+        assert_ne!(
+            id1,
+            file_id_from_file(&file).expect("identity"),
+            "a replaced file gets a fresh id"
+        );
+    }
 }

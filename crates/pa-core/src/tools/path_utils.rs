@@ -626,7 +626,6 @@ mod tests {
     }
 
     /// The win32 sibling of `expand_tilde`: `~` and `~\`+rest join onto the home with backslashes.
-    /// home with backslashes.
     #[test]
     #[cfg(windows)]
     fn expand_tilde_win32() {
