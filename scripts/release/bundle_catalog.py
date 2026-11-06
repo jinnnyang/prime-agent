@@ -66,7 +66,9 @@ MIN_MCP_SERVICES = 50
 # The offline fixture's generated service count (plus the special entries).
 FIXTURE_MCP_SERVICES = 68
 
-CATALOG_REPO = "PrimeIntellect-ai/prime-agent-catalog"
+# Self-hosted on the fork (branch main = curated, upstream = mirror); see #12.
+# Intentional divergence from PrimeIntellect-ai/prime-agent-catalog.
+CATALOG_REPO = "jinnnyang/prime-agent-catalog"
 MODEL_CATALOG_PATH = "models/catalog.v1.json"
 MCP_SERVICE_CATALOG_PATH = "plugins/catalog.v2.json"
 

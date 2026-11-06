@@ -6,12 +6,16 @@ use std::time::Duration;
 use thiserror::Error;
 
 /// The provider model catalog aggregate (models side of the catalog repo).
+///
+/// The catalog source is self-hosted on this fork (`jinnnyang/prime-agent-catalog`,
+/// curated on `main`, mirrored from upstream on `upstream`). This is an intentional
+/// fork divergence from `PrimeIntellect-ai/prime-agent-catalog` tracked in #12.
 pub const MODEL_CATALOG_URL: &str =
-    "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent-catalog/main/models/catalog.v1.json";
+    "https://raw.githubusercontent.com/jinnnyang/prime-agent-catalog/main/models/catalog.v1.json";
 
 /// The MCP service catalog aggregate (plugins side of the catalog repo).
 pub const MCP_SERVICE_CATALOG_URL: &str =
-    "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent-catalog/main/plugins/catalog.v2.json";
+    "https://raw.githubusercontent.com/jinnnyang/prime-agent-catalog/main/plugins/catalog.v2.json";
 
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -211,11 +215,11 @@ mod tests {
     fn catalog_urls_are_the_frozen_contract() {
         assert_eq!(
             MODEL_CATALOG_URL,
-            "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent-catalog/main/models/catalog.v1.json"
+            "https://raw.githubusercontent.com/jinnnyang/prime-agent-catalog/main/models/catalog.v1.json"
         );
         assert_eq!(
             MCP_SERVICE_CATALOG_URL,
-            "https://raw.githubusercontent.com/PrimeIntellect-ai/prime-agent-catalog/main/plugins/catalog.v2.json"
+            "https://raw.githubusercontent.com/jinnnyang/prime-agent-catalog/main/plugins/catalog.v2.json"
         );
     }
 }
