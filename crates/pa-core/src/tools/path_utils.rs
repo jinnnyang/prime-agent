@@ -500,7 +500,11 @@ pub fn resolve_read_path(file_path: &str, cwd: &str) -> String {
 mod tests {
     use super::*;
 
+    /// POSIX dispatcher semantics (the iOS-TS tool contract): the dispatcher is
+    /// platform-picked, so a POSIX expectation is a not-windows test; the win32
+    /// sibling lives below.
     #[test]
+    #[cfg(not(windows))]
     fn expand_tilde() {
         assert_eq!(expand_path_platform("~", Some("/home/u")), "/home/u");
         assert_eq!(
@@ -516,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn strips_at_prefix() {
         assert_eq!(expand_path_platform("@~/f", Some("/h")), "/h/f");
     }
@@ -618,5 +623,27 @@ mod tests {
             win32_resolve_with(r"C:\cwd", r"Q:rel\f.txt", &|_| r"D:\other".to_string()),
             r"Q:\rel\f.txt"
         );
+    }
+
+    /// The win32 sibling of `expand_tilde`: `~` and `~\`+rest join onto the home with backslashes.
+    /// home with backslashes.
+    #[test]
+    #[cfg(windows)]
+    fn expand_tilde_win32() {
+        assert_eq!(
+            expand_path_platform("~", Some(r"C:\Users\u")),
+            r"C:\Users\u"
+        );
+        assert_eq!(
+            expand_path_platform(r"~\sub\x", Some(r"C:\Users\u")),
+            r"C:\Users\u\sub\x"
+        );
+        // The POSIX home shows up verbatim when a caller keeps `/`-joined input
+        // (settings answers already normalized): win32.join normalizes to backslashes.
+        assert_eq!(
+            expand_path_platform("~/sub/x", Some("C:/Users/u")),
+            r"C:\Users\u\sub\x"
+        );
+        assert_eq!(expand_path_platform("/abs", Some(r"C:\Users\u")), "/abs");
     }
 }

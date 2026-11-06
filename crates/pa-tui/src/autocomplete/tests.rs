@@ -756,10 +756,9 @@ fn at_lookup_answers_inline_from_a_built_index() {
         .file_index
         .build(&base, file_index::MAX_INDEX_ENTRIES));
     let text = "@par";
-    assert!(matches!(
-        provider.get_suggestions(&[text.to_string()], 0, text.len(), false),
-        Some(SuggestionLookup::Ready(_))
-    ));
+    let probe = provider.get_suggestions(&[text.to_string()], 0, text.len(), false);
+    println!("PROBE lookup = {probe:?}");
+    assert!(matches!(probe, Some(SuggestionLookup::Ready(_))));
 }
 
 /// A xorshift generator: the random trees need no dependency.

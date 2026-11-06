@@ -301,7 +301,7 @@ fn read_incident_log_lines(
 ) -> Option<IncidentLogChunk> {
     let mut file = std::fs::File::open(log_path).ok()?;
     let stats = file.metadata().ok()?;
-    let file_id = file_identity(&stats);
+    let file_id = file_identity(&file, &stats);
     let rotated =
         previous_file_id.is_some_and(|id| file_id.as_deref().is_some_and(|current| current != id));
     let retailed = previous_offset.is_none()
@@ -386,18 +386,32 @@ fn read_incident_log_lines(
     })
 }
 
-/// The filesystem identity of the log: `dev:ino` on Unix (a rotation
-/// changes the inode). Rust's std has no dev/ino on other platforms, and
-/// keying on size + mtime instead would flip the identity on every append
-/// — re-tailing consumed bytes into phantom update restarts.
+/// The filesystem identity of the log: `dev:ino` on Unix, the NTFS
+/// `volume_serial_number:file_index` on Windows (a rename rotation keeps
+/// the volume/index of the previous git file — the same `dev:ino` semantics
+/// that pins the identity across appends and releases it on rotation).
+/// Keying on size + mtime would flip the identity on every append —
+/// re-tailing consumed bytes into phantom update restarts.
 #[cfg(unix)]
-fn file_identity(stats: &std::fs::Metadata) -> Option<String> {
+fn file_identity(_file: &std::fs::File, stats: &std::fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     Some(format!("{}:{}", stats.dev(), stats.ino()))
 }
 
-#[cfg(not(unix))]
-fn file_identity(_stats: &std::fs::Metadata) -> Option<String> {
+/// The Windows handle identity: the NTFS volume serial + file id (the same
+/// rename-stable, append-stable semantics as the unix `dev:ino`), answered
+/// safely by `pa-types`' kernel32 extern wall. The cheaper metadata copies (creation
+/// time) cannot be trusted: NTFS "file tunneling" reassigns a recreated
+/// path's creation time within the tunneling window, which would read a
+/// rotation as the same generation.
+#[cfg(windows)]
+fn file_identity(file: &std::fs::File, _stats: &std::fs::Metadata) -> Option<String> {
+    let id = pa_types::platform::file_id_from_file(file)?;
+    Some(format!("{}:{}", id.volume, id.index))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_file: &std::fs::File, _stats: &std::fs::Metadata) -> Option<String> {
     None
 }
 
@@ -494,6 +508,17 @@ pub fn refresh_incident_notice_state(
     // real rotation is still caught when the file id changes on a later read.
     let previous = state.notice.clone();
     state.entries = merge_incident_windowed_entries(&state.entries, &parsed, since_ms);
+    if std::env::var("PAINCPROBE").is_ok() {
+        eprintln!(
+            "INCPROBE2 state_id={:?} parsed_n={} parsed={:?}",
+            state.log_file_id,
+            parsed.len(),
+            parsed
+                .iter()
+                .map(|p| (&p.msg, p.time_ms))
+                .collect::<Vec<_>>()
+        );
+    }
     let notices = derive_incident_notices(&state.entries, now_ms);
     state.notice = select_incident_notice(
         &notices

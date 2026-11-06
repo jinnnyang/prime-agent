@@ -1,0 +1,1 @@
+- Fixed the Windows test battery: 48 environment-dependent failures across pa-core/pa-tui, plus real Windows bugs surfaced (file-rotation identity via FILE_ID_INFO, invalid JSON in trace parent paths).
