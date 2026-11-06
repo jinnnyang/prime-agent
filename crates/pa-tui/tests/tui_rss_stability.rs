@@ -296,7 +296,10 @@ fn stream_turn(writer: &mut UnixStream) {
 /// grows with the session (as designed), but no per-frame or per-event class may accumulate.
 /// The scripted stream is linear on purpose; splitting it would read worse than the margin.
 #[test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the scripted stream is linear on purpose; splitting it would read worse than the function-length margin"
+)]
 fn interactive_session_rss_plateaus_over_long_stream() {
     const TURNS: usize = 40;
     let dir = tempfile::TempDir::new().expect("temp dir");
