@@ -401,6 +401,9 @@ fn open_treats_a_path_shaped_header_id_as_corrupted() {
 /// Replay validation must stay on the retained index: the full-history query
 /// panics after window adoption. Replaying a registered row once does not
 /// suppress a later legitimate submission of the same text.
+// The windowed store is unix-only (inode-anchored certificates); the
+// non-unix fallback serves full history and the gate is not testable here.
+#[cfg(unix)]
 #[test]
 fn replay_admitted_user_rows_stays_windowed_and_reuses_only_registered_ids() {
     let dir = tempfile::tempdir().unwrap();

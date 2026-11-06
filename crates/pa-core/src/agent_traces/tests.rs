@@ -268,8 +268,10 @@ async fn an_oversize_session_reports_the_limit() {
     )
     .expect("header");
     drop(file);
-    std::fs::File::options()
-        .append(true)
+    // Write access for `set_len` (Windows `append(true)` maps to
+    // FILE_APPEND_DATA, which cannot grow the file).
+    std::fs::OpenOptions::new()
+        .write(true)
         .open(&session)
         .expect("reopen")
         .set_len(MAX_TRACE_BYTES + 1)
@@ -370,14 +372,16 @@ async fn the_parent_chain_resolves_the_trace_id() {
     let fixture = Fixture::new();
     let parent = fixture.write_session("parent.jsonl", "root-id");
     let child = fixture.session_dir.join("child.jsonl");
-    std::fs::write(
-        &child,
-        format!(
-            "{{\"type\":\"session\",\"id\":\"child-id\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/w\",\"parentSession\":\"{}\",\"version\":3}}\n",
-            parent.display()
-        ),
-    )
-    .expect("child file");
+    // serde_json escapes the id (a Windows path carries backslashes).
+    let header = serde_json::json!({
+        "type": "session",
+        "id": "child-id",
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "cwd": "/w",
+        "parentSession": parent.display().to_string(),
+        "version": 3,
+    });
+    std::fs::write(&child, format!("{header}\n")).expect("child file");
     let header = read_trace_session_header(&child).expect("header");
     let (trace_id, parent_session_id) = resolve_trace_context(&child, &header);
     assert_eq!(trace_id, "root-id");

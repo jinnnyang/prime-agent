@@ -4,7 +4,8 @@ use super::*;
 use crate::goals::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
 use crate::session::manager::SessionManager;
 use pa_types::ai::UserContent;
-use std::fmt::Write as _;
+#[cfg(unix)]
+use std::fmt::Write as _; // the gated windowed-store test builds its fixture with writeln!
 
 /// The latest persisted goal state with the terminal row reverted:
 /// the newest ACTIVE streak-3 row.
@@ -149,6 +150,9 @@ fn usage(input: u64, output: u64) -> pa_types::ai::Usage {
     }
 }
 
+// `SessionManager::open_windowed` engages the unix-only windowed store; a
+// non-unix box would serve full history and invert the assertion.
+#[cfg(unix)]
 #[tokio::test]
 async fn compacted_goal_restore_and_mutation_do_not_hydrate_history() {
     let dir = tempfile::tempdir().unwrap();

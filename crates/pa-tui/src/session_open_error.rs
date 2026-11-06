@@ -272,7 +272,10 @@ mod tests {
             file.display()
         )));
         assert!(text.contains("Holder: session holder-1 \u{201c}lane work\u{201d} \u{b7} cwd /w"));
-        assert!(text.contains("Attach to it instead: prime-agent --resume 'holder-1'"));
+        assert!(text.contains(&format!(
+            "Attach to it instead: prime-agent {}",
+            quoted_resume_arg("holder-1")
+        )));
         assert!(text.contains("the file unlocks when that session exits"));
     }
 
@@ -285,9 +288,8 @@ mod tests {
             model: None,
         };
         let text = already_active_error(&holder, Path::new("/s/a.jsonl"));
-        assert!(text.contains(
-            "Holder: session live-9\nAttach to it instead: prime-agent --resume 'live-9'"
-        ));
+        assert!(text.contains("Holder: session live-9\nAttach to it instead: prime-agent --resume"));
+        assert!(text.contains(&quoted_resume_arg("live-9")));
     }
 
     #[test]
@@ -382,7 +384,10 @@ mod decorate_tests {
             "{text}"
         );
         assert!(
-            text.contains("Attach instead: prime-agent --resume 'abc123'"),
+            text.contains(&format!(
+                "Attach instead: prime-agent {}",
+                quoted_resume_arg("abc123")
+            )),
             "{text}"
         );
     }
@@ -425,9 +430,10 @@ mod decorate_tests {
         let original = "Session is already active in 245ddb974b6d; rm -rf /: /tmp/s.jsonl";
         let text =
             decorate_interactive_refusal(original, Some(holder.clone()), "245ddb974b6d; rm -rf /");
+        let hostile = "245ddb974b6d; rm -rf /";
         assert!(
-            text.contains("--resume '245ddb974b6d; rm -rf /'"),
-            "the hostile id rides single-quoted: {text}"
+            text.contains(&quoted_resume_arg(hostile)),
+            "the hostile id rides quoted: {text}"
         );
         assert!(
             !text.contains("--resume 245ddb974b6d;"),
@@ -436,11 +442,13 @@ mod decorate_tests {
         // The print-mode refusal quotes the same way.
         let printed = already_active_error(&holder, Path::new("/tmp/s.jsonl"));
         assert!(
-            printed.contains("--resume '245ddb974b6d; rm -rf /'"),
+            printed.contains(&quoted_resume_arg(hostile)),
             "the print-mode line quotes too: {printed}"
         );
         // The embedded-quote escape: an id carrying a single quote still round-trips as ONE
-        // argument.
+        // argument. The POSIX single-quote escape form only holds for the
+        // POSIX shell; the win32 quoting helper answers a different form.
+        #[cfg(not(windows))]
         assert_eq!(
             quoted_resume_arg("it's"),
             "--resume 'it'\\''s'",

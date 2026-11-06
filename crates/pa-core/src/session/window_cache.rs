@@ -130,7 +130,7 @@ pub(super) fn load(path: &Path, file: &File, stats: &mut WindowReadStats) -> Opt
     Some(snapshot)
 }
 /// Drop the in-process snapshot so a test exercises the on-disk sidecar.
-#[cfg(test)]
+#[cfg(all(test, unix))] // the windowed-store battery is unix-only
 pub(super) fn evict_live_snapshot(path: &Path) {
     if let Ok(mut snapshots) = live_snapshots().lock() {
         snapshots.remove(path);

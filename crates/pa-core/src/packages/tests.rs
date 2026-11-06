@@ -3,17 +3,25 @@
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
-use std::process::Command;
+#[cfg(unix)]
+use std::process::Command; // the gated git-flow helper invokes bare `git`
 
 #[cfg(unix)]
 use crate::packages::exe_dir_of;
+// The npm/git flow battery's fixtures are gated unix-only with their tests
+// (the child-process contract they exercise is POSIX-shaped).
+#[cfg(unix)]
 use crate::packages::source::{GitSource, SourceScope, UserOrProject};
+#[cfg(unix)]
 use crate::packages::PackageManager;
+#[cfg(unix)]
 use crate::settings::SettingsManager;
 
 /// Minimal npm replacement: bash script with the fixture paths embedded, so
 /// parallel tests never share state. Logs every call to `<root>/npm.log`.
+#[cfg(unix)]
 fn write_npm_shim(dir: &Path) -> PathBuf {
     let global_root = dir.join("global-root").display().to_string();
     let fixtures = dir.join("fixtures").display().to_string();
@@ -72,7 +80,8 @@ esac
 }
 
 /// A bare repo with one commit on `main`, plus a work clone for follow-up
-/// commits.
+/// commits (the gated git-flow tests build on it).
+#[cfg(unix)]
 fn make_bare_repo(dir: &Path) -> (PathBuf, PathBuf) {
     let bare = dir.join("bare").join("fixtures").join("repo.git");
     let work = dir.join("work");
@@ -94,6 +103,7 @@ fn make_bare_repo(dir: &Path) -> (PathBuf, PathBuf) {
     (bare, work)
 }
 
+#[cfg(unix)]
 fn run_git(cwd: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -103,6 +113,7 @@ fn run_git(cwd: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
+#[cfg(unix)]
 struct Sandbox {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -111,6 +122,7 @@ struct Sandbox {
     npm_shim: PathBuf,
 }
 
+#[cfg(unix)]
 impl Sandbox {
     fn new(_prefix: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -147,6 +159,9 @@ impl Sandbox {
     }
 }
 
+// The flow runs npm/git child processes; on Windows the shim and PATHEXT
+// resolution differ from the POSIX contract.
+#[cfg(unix)]
 #[test]
 fn npm_install_list_remove_flow() {
     let _guard = super::test_support::ENV_MUTEX.lock().unwrap();
@@ -177,6 +192,9 @@ fn npm_install_list_remove_flow() {
     assert!(log.contains("npm uninstall -g fake-pkg\n"), "{log}");
 }
 
+// The flow runs npm/git child processes; on Windows the shim and PATHEXT
+// resolution differ from the POSIX contract.
+#[cfg(unix)]
 #[test]
 fn npm_update_skips_matching_versions() {
     let _guard = super::test_support::ENV_MUTEX.lock().unwrap();
@@ -194,6 +212,9 @@ fn npm_update_skips_matching_versions() {
     assert!(!log.contains("npm install -g fake-pkg@latest"), "{log}");
 }
 
+// The flow runs npm/git child processes; on Windows the shim and PATHEXT
+// resolution differ from the POSIX contract.
+#[cfg(unix)]
 #[test]
 fn npm_update_reinstalls_moved_versions() {
     let _guard = super::test_support::ENV_MUTEX.lock().unwrap();
@@ -216,6 +237,9 @@ fn npm_update_reinstalls_moved_versions() {
     );
 }
 
+// The flow runs npm/git child processes; on Windows the shim and PATHEXT
+// resolution differ from the POSIX contract.
+#[cfg(unix)]
 #[test]
 fn update_unknown_source_is_an_error_with_suggestion() {
     let _guard = super::test_support::ENV_MUTEX.lock().unwrap();
@@ -231,6 +255,9 @@ fn update_unknown_source_is_an_error_with_suggestion() {
     );
 }
 
+// The flow runs npm/git child processes; on Windows the shim and PATHEXT
+// resolution differ from the POSIX contract.
+#[cfg(unix)]
 #[test]
 fn git_clone_update_remove_flow() {
     let _guard = super::test_support::ENV_MUTEX.lock().unwrap();
@@ -292,6 +319,9 @@ fn git_clone_update_remove_flow() {
     assert!(sandbox.agent_dir.join("git").join(".gitignore").exists());
 }
 
+// The flow runs npm/git child processes; on Windows the shim and PATHEXT
+// resolution differ from the POSIX contract.
+#[cfg(unix)]
 #[test]
 fn git_ref_checkout_installs_the_pinned_revision() {
     let _guard = super::test_support::ENV_MUTEX.lock().unwrap();
