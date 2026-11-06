@@ -177,6 +177,9 @@ pub(crate) struct SessionUi {
     model_configured_providers: std::collections::HashSet<String>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
+    /// The catalog visibility summary the daemon serves with its snapshots
+    /// (`"N model(s) hidden by modelCatalog filters"`); `None` renders no line.
+    model_visibility_note: Option<String>,
     default_thinking_level: Option<String>,
     models_fetched_at: Option<std::time::Instant>,
     pasted_images: std::collections::BTreeMap<u64, LoadedImage>,

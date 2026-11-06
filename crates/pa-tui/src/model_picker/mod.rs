@@ -51,6 +51,12 @@ pub(crate) enum ModelCommandOutcome {
     Open(Box<ModelPicker>),
 }
 
+/// The picker's one-line summary of an active catalog visibility filter.
+#[must_use]
+pub fn catalog_visibility_note(hidden: u64) -> String {
+    format!("{hidden} model(s) hidden by modelCatalog filters")
+}
+
 /// The catalog snapshot plus the client state the picker needs.
 #[derive(Debug, Default)]
 pub struct ModelPickerOptions {
@@ -62,6 +68,8 @@ pub struct ModelPickerOptions {
     pub configured_providers: HashSet<String>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     pub recent_models: Vec<String>,
+    /// The catalog visibility filter's one-line summary (`None` renders no line).
+    pub visibility_note: Option<String>,
     /// The session's scoped models as `provider/id` keys: the picker opens on them when non-empty,
     /// else the full catalog; the keys resolve against the loaded catalog (a missing entry is not
     /// listed).
@@ -103,6 +111,8 @@ pub struct ModelPicker {
     recent_rank: HashMap<String, usize>,
     /// The effort a fresh selection starts from; `None` resolves to "off" per model.
     initial_thinking_level: Option<ModelThinkingLevel>,
+    /// The catalog visibility filter's one-line summary (`None` renders no line).
+    visibility_note: Option<String>,
     /// The viewport row budget (TS `getRows`).
     viewport_rows: usize,
     search: SearchInput,
@@ -144,6 +154,7 @@ impl ModelPicker {
                 .map(|(index, key)| (key.clone(), index))
                 .collect(),
             initial_thinking_level: options.thinking_level,
+            visibility_note: options.visibility_note,
             viewport_rows: options.viewport_rows,
             search: SearchInput::new(),
             filtered: Vec::new(),
@@ -177,6 +188,12 @@ impl ModelPicker {
         self.search.value()
     }
 
+    /// The catalog visibility filter's summary line, when one is active.
+    #[must_use]
+    pub fn visibility_note(&self) -> Option<&str> {
+        self.visibility_note.as_deref()
+    }
+
     /// Replace the catalog snapshot (the daemon refresh landing): re-sort, re-filter with the live
     /// query, and keep the selection on the same model when it survived the refresh.
     pub fn update_state(
@@ -184,9 +201,11 @@ impl ModelPicker {
         current: Option<CurrentModel>,
         models: Vec<Model>,
         configured_providers: HashSet<String>,
+        visibility_note: Option<String>,
     ) {
         self.current = current;
         self.configured_providers = configured_providers;
+        self.visibility_note = visibility_note;
         let selected_key = self
             .selected_model()
             .map(|model| Self::model_key_provider(&model.provider, &model.id));

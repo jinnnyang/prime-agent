@@ -51,6 +51,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "images",
     "enabledModels",
     "allowedModels",
+    "modelCatalog",
     "treeFilterMode",
     "chatDetail",
     "thinkingBudgets",
@@ -146,6 +147,31 @@ mod tests {
             settings.extra.get("pythonCellTimeoutValid"),
             Some(&serde_json::json!(30_000)),
             "genuine unknown keys keep flowing through extra"
+        );
+    }
+
+    #[test]
+    fn model_catalog_visibility_loads_and_guards_typing() {
+        // The whole nested object parses when every member is well-typed.
+        let value: Value = serde_json::json!({
+            "modelCatalog": { "deny": ["*-preview", "databricks/dbrx"], "allow": ["prime-inference/*"] }
+        });
+        let settings = from_value_lenient(&value);
+        let model_catalog = settings.model_catalog.as_ref().unwrap();
+        assert_eq!(model_catalog.deny.as_ref().unwrap().len(), 2);
+        assert_eq!(model_catalog.allow.as_ref().unwrap().len(), 1);
+        assert!(!settings.extra.contains_key("modelCatalog"));
+
+        // A wrong-typed inner value drops the whole key out of extra (behaves
+        // as unset) instead of leaking the raw value into a later save.
+        let value: Value = serde_json::json!({
+            "modelCatalog": { "deny": "not-an-array" }
+        });
+        let settings = from_value_lenient(&value);
+        assert!(settings.model_catalog.is_none());
+        assert!(
+            !settings.extra.contains_key("modelCatalog"),
+            "a wrong-typed known field never rides extra into a save"
         );
     }
 

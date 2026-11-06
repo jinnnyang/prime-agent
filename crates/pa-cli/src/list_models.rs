@@ -43,6 +43,13 @@ async fn list(options: &RunOptions) -> Result<i32, String> {
     };
     filtered.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
     print_table(&filtered);
+    let summary = registry.catalog_filter_summary();
+    if !summary.is_empty() {
+        println!(
+            "{}",
+            pa_tui::model_picker::catalog_visibility_note(summary.hidden as u64)
+        );
+    }
     Ok(0)
 }
 

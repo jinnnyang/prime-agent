@@ -262,6 +262,7 @@ async fn tui_export_and_share_surface() {
         model_catalog: Vec::new(),
         model_configured_providers: std::collections::HashSet::default(),
         model_recent_models: Vec::new(),
+        model_visibility_note: None,
         default_thinking_level: None,
         no_session: false,
         session: pa_tui::interactive::SessionSelection::Attach(session_id.clone()),

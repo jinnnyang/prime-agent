@@ -316,6 +316,8 @@ pub struct InteractiveOptions {
     pub model_configured_providers: std::collections::HashSet<String>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     pub model_recent_models: Vec<String>,
+    /// The catalog visibility summary from the startup snapshot (`None` renders no line).
+    pub model_visibility_note: Option<String>,
     /// The settings default thinking level (the picker's effort seed for non-reasoning models).
     pub default_thinking_level: Option<String>,
     /// Persistence directory for new sessions (defaults to the daemon's sessions dir when `None`).

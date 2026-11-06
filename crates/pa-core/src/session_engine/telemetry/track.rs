@@ -59,6 +59,23 @@ pub fn track_model_refused(
     client.track("model refused", properties);
 }
 
+/// Track a served filtered catalog listing (`model catalog filtered`,
+/// schema v2): the settings `modelCatalog` visibility filter hid entries
+/// from this listing. Surface and counts only — never the pattern text,
+/// the hidden selectors, or the catalog payload.
+pub fn track_model_catalog_filtered(
+    client: &TelemetryClient,
+    surface: &str,
+    hidden: usize,
+    patterns: usize,
+) {
+    let mut properties = base_properties("daemon");
+    properties.set("surface", Value::from(surface));
+    properties.set("hidden", Value::from(hidden));
+    properties.set("patterns", Value::from(patterns));
+    client.track("model catalog filtered", properties);
+}
+
 /// Track the boot descriptor-adoption pass's `daemon event` (schema v1, kind
 /// `worker_adoption`): the boot kind and per-outcome counts, never session payload.
 /// `skipped_idle` counts the dead descriptors the busy-evidence filter parked.

@@ -333,6 +333,7 @@ impl SessionUi {
             model_catalog: self.model_catalog.clone(),
             model_configured_providers: self.model_configured_providers.clone(),
             model_recent_models: self.model_recent_models.clone(),
+            model_visibility_note: self.model_visibility_note.clone(),
             default_thinking_level: self.default_thinking_level.clone(),
             no_session: false,
             session: SessionSelection::New,

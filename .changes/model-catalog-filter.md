@@ -1,0 +1,1 @@
+- Added `modelCatalog.allow`/`modelCatalog.deny` settings: hide stale or irrelevant models from every catalog listing (`/model`, `model list`, sign-in) with a "N model(s) hidden" summary.

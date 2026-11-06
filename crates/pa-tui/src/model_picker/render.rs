@@ -57,6 +57,11 @@ pub(super) fn render(
         }
         lines.push(crate::width::truncate_line(&line, width, "..."));
     }
+    if let Some(note) = picker.visibility_note() {
+        // The filter summary sits where the filtered list is shown; muted,
+        // pattern-level only (counts, never the hidden entries).
+        lines.push(vec![theme.fg_span(ThemeColor::Muted, format!(" {note}"))]);
+    }
     lines.extend(search_field_lines(
         theme,
         width,
