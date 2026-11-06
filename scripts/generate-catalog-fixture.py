@@ -2,7 +2,7 @@
 """Refresh the catalog parity fixture (tests/fixtures/catalog.v1.json).
 
 The fixture is a byte-faithful snapshot of the real catalog repo
-(PrimeIntellect-ai/prime-agent-catalog, models/catalog.v1.json). The
+(jinnnyang/prime-agent-catalog, models/catalog.v1.json). The
 published payload already IS the catalog aggregate `createModelCatalog`
 builds from it (packages/ai/src/model-catalog.ts semantics): schemaVersion
 1, headers stripped, prime-inference excluded (it is fetched live),
