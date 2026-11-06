@@ -17,6 +17,9 @@ use crate::worker::{OutboundFrame, Worker};
 pub(crate) struct RefreshGate {
     in_flight: std::sync::atomic::AtomicBool,
     queued: std::sync::atomic::AtomicBool,
+    /// The adoption report fires once per worker lifetime (the worker is
+    /// one session's daemon); re-served filtered listings do not re-report.
+    visibility_reported: std::sync::atomic::AtomicBool,
 }
 
 impl Worker {
@@ -41,6 +44,7 @@ impl Worker {
             .cloned()
             .collect::<Vec<_>>();
         let served = catalog_payload(&registry, &available);
+        self.note_catalog_visibility_report(&served);
         // An observed credential-scope change forces the refresh; the
         // observation consumes the scope, so one change forces exactly once.
         let credentials = pa_core::models::prime_credentials_for_dir(&agent_dir);
@@ -52,6 +56,51 @@ impl Worker {
         };
         self.spawn_catalog_refresh(trigger, served.clone());
         response_success(None, "get_model_catalog", Some(served))
+    }
+
+    /// The `model catalog filtered` adoption report (fire-and-forget): one
+    /// per worker lifetime, only when a served listing is actually filtered
+    /// (never the pattern text or hidden selectors). Emission is fully off
+    /// the response path: the report never delays a picker open.
+    fn note_catalog_visibility_report(&self, served: &Value) {
+        let Some(visibility) = served.get("modelCatalogVisibility") else {
+            return;
+        };
+        let Some(hidden) = visibility.get("hidden").and_then(Value::as_u64) else {
+            return;
+        };
+        if hidden == 0 {
+            return;
+        }
+        if self
+            .model_catalog_refresh_gate
+            .visibility_reported
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let patterns = visibility
+            .get("byPattern")
+            .and_then(Value::as_object)
+            .map_or(0, serde_json::Map::len);
+        let agent_dir = self.config.agent_dir.clone();
+        let telemetry_disabled = self.config.telemetry_disabled.unwrap_or(false);
+        tokio::spawn(async move {
+            if telemetry_disabled {
+                return;
+            }
+            let settings = pa_core::settings::SettingsManager::create(&agent_dir, &agent_dir);
+            if !pa_core::session_engine::telemetry::telemetry_switch(&settings).enabled() {
+                return;
+            }
+            let client = pa_core::session_engine::telemetry::build_client(&settings, &agent_dir);
+            pa_core::session_engine::telemetry::track_model_catalog_filtered(
+                &client,
+                "picker",
+                hidden as usize,
+                patterns,
+            );
+        });
     }
 
     /// The background catalog refresh: the same awaited chain the TS
@@ -130,9 +179,17 @@ fn catalog_payload(
         .into_iter()
         .map(|model| serde_json::to_value(model).unwrap_or(Value::Null))
         .collect();
+    let summary = registry.catalog_filter_summary();
+    let visibility = (!summary.is_empty()).then(|| {
+        json!({
+            "hidden": summary.hidden,
+            "byPattern": summary.hidden_by_pattern,
+        })
+    });
     json!({
         "models": models,
         "configuredProviders": providers,
+        "modelCatalogVisibility": visibility,
     })
 }
 

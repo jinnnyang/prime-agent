@@ -294,7 +294,12 @@ fn stream_turn(writer: &mut UnixStream) {
 
 /// A long scripted session must not grow the TUI's resident memory without bound: the transcript
 /// grows with the session (as designed), but no per-frame or per-event class may accumulate.
+/// The scripted stream is linear on purpose; splitting it would read worse than the margin.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the scripted stream is linear on purpose; splitting it would read worse than the function-length margin"
+)]
 fn interactive_session_rss_plateaus_over_long_stream() {
     const TURNS: usize = 40;
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -316,6 +321,7 @@ fn interactive_session_rss_plateaus_over_long_stream() {
         model_catalog: Vec::new(),
         model_configured_providers: std::collections::HashSet::default(),
         model_recent_models: Vec::new(),
+        model_visibility_note: None,
         default_thinking_level: None,
         no_session: false,
         session: SessionSelection::New,

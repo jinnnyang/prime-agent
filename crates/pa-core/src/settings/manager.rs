@@ -10,8 +10,10 @@ use super::load::from_value_lenient;
 use super::merge::{deep_merge, migrate};
 use super::storage::{SettingsScope, SettingsStorage};
 use super::types::{
-    QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting, UpdateChannel,
+    ModelCatalogSettings, QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting,
+    UpdateChannel,
 };
+use crate::models::CatalogVisibility;
 
 pub const RECENT_MODELS_LIMIT: usize = 20;
 pub const DEFAULT_IDLE_EVICTION_MINUTES: u64 = 90;
@@ -605,6 +607,29 @@ impl SettingsManager {
         (!patterns.is_empty()).then_some(patterns)
     }
 
+    /// The catalog visibility filters (settings `modelCatalog.allow`/`deny`),
+    /// applied when the model catalog resolves listings. Rust-only fork
+    /// extension; global scope only (the catalog chain is shared per agent
+    /// dir, a project cannot retint a shared data source); blank patterns
+    /// trim away and a list that trims to empty behaves as unset.
+    #[must_use]
+    pub fn get_model_catalog_visibility(&self) -> Option<CatalogVisibility> {
+        let settings: &ModelCatalogSettings = self.global.model_catalog.as_ref()?;
+        let trim = |patterns: &Option<Vec<String>>| -> Vec<String> {
+            patterns
+                .iter()
+                .flatten()
+                .map(|pattern| pattern.trim().to_string())
+                .filter(|pattern| !pattern.is_empty())
+                .collect()
+        };
+        let visibility = CatalogVisibility {
+            allow: trim(&settings.allow),
+            deny: trim(&settings.deny),
+        };
+        (!visibility.is_empty()).then_some(visibility)
+    }
+
     /// The persisted default a fresh session starts from; the stored
     /// string is the same vocabulary `get_default_service_tier` parses.
     ///
@@ -1024,6 +1049,36 @@ fn load_scope(
 mod tests {
     use super::*;
     use crate::settings::types::{MarkdownSettings, DEFAULT_PYTHON_CELL_TIMEOUT_MS};
+
+    /// `modelCatalog` filters read the GLOBAL scope only (they color a
+    /// shared per-agent catalog; a project cannot retint the data source)
+    /// and blank patterns trim to unset.
+    #[test]
+    fn model_catalog_visibility_reads_the_global_scope_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("cwd");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // The project scope tries to deny everything.
+        std::fs::write(
+            cwd.join(".prime/agent/settings.json"),
+            r#"{ "modelCatalog": { "deny": ["*"] } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "modelCatalog": { "deny": ["*-preview", "  ", "databricks/*"] } }"#,
+        )
+        .unwrap();
+        let manager = SettingsManager::create(&cwd, &agent_dir);
+        let visibility = manager.get_model_catalog_visibility().expect("filters set");
+        assert_eq!(
+            visibility.deny,
+            vec!["*-preview".to_string(), "databricks/*".to_string()]
+        );
+        assert!(visibility.allow.is_empty());
+    }
 
     #[test]
     fn in_memory_loads_merges_and_saves() {

@@ -221,6 +221,7 @@ fn tui_options(socket: &Path, session_dir: &Path, script: &Path) -> InteractiveO
         model_catalog: Vec::new(),
         model_configured_providers: std::collections::HashSet::default(),
         model_recent_models: Vec::new(),
+        model_visibility_note: None,
         default_thinking_level: None,
         session_dir: Some(session_dir.to_path_buf()),
         script_path: Some(script.to_path_buf()),

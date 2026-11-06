@@ -118,6 +118,7 @@ fn picker_options(catalog: Vec<Model>) -> ModelPickerOptions {
         current: Some(current()),
         configured_providers: configured(),
         recent_models: Vec::new(),
+        visibility_note: None,
         scoped_models: Vec::new(),
         thinking_level: Some(ModelThinkingLevel::Medium),
         viewport_rows: 19,
@@ -227,7 +228,7 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
     );
     let mut refreshed = battery_catalog();
     refreshed.push(model("prime-inference", "mock-9", "Mock 9", false, None));
-    picker.update_state(None, refreshed, configured());
+    picker.update_state(None, refreshed, configured(), None);
     assert_eq!(
         picker.filtered_len(),
         1,
@@ -510,9 +511,29 @@ fn update_state_keeps_the_selection_on_the_surviving_model() {
         false,
         None,
     ));
-    picker.update_state(Some(current()), catalog, configured());
+    picker.update_state(Some(current()), catalog, configured(), None);
     let selected = picker.selected_model().expect("selection").clone();
     assert_eq!(selected.id, "anthropic/claude-fable-5");
+}
+
+#[test]
+fn the_visibility_summary_line_renders_when_a_filter_is_active() {
+    let mut options = picker_options(battery_catalog());
+    options.visibility_note = Some("2 model(s) hidden by modelCatalog filters".to_string());
+    let mut picker = ModelPicker::new(options);
+    let rows = frame_text(&mut picker);
+    assert!(rows
+        .iter()
+        .any(|row| row.contains("2 model(s) hidden by modelCatalog filters")));
+}
+
+#[test]
+fn the_visibility_summary_line_stays_off_when_unfiltered() {
+    let mut picker = ModelPicker::new(picker_options(battery_catalog()));
+    let rows = frame_text(&mut picker);
+    assert!(!rows
+        .iter()
+        .any(|row| row.contains("hidden by modelCatalog filters")));
 }
 
 #[test]
