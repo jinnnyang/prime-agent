@@ -454,3 +454,46 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
         vec![existing]
     );
 }
+
+#[test]
+fn catalog_visibility_filters_built_ins_but_not_custom_models() {
+    let dir = tempfile::tempdir().unwrap();
+    // The global settings: deny `*-preview`, allow only the two providers
+    // below through the same filter run.
+    let settings = serde_json::json!({
+        "modelCatalog": { "deny": ["*-preview"], "allow": ["test-provider/*", "pa-core-tests/*"] }
+    });
+    std::fs::write(
+        dir.path().join("settings.json"),
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": { "custom": {
+            "baseUrl": "https://custom.example", "apiKey": "custom-key",
+            "api": "openai-completions",
+            "models": [ { "id": "do-not-hide-preview-style" } ]
+        } } }"#,
+    )
+    .unwrap();
+
+    let registry = ModelRegistry::create(auth_with(&serde_json::json!({})), &models_path);
+    let all = registry.get_all();
+    // The user's custom models.json entry survives the catalog filter even
+    // though its id carries a `preview`-matching suffix.
+    assert!(all
+        .iter()
+        .any(|model| model.provider == "custom" && model.id == "do-not-hide-preview-style"));
+    // Built-in previews from any provider are hidden.
+    assert!(!all
+        .iter()
+        .any(|model| model.id.ends_with("-preview") && model.provider != "custom"));
+    // ...and the summary accounts for what the filter removed.
+    assert!(registry.catalog_filter_summary().hidden >= 1);
+    assert!(registry
+        .catalog_filter_summary()
+        .hidden_by_pattern
+        .contains_key("*-preview"));
+}

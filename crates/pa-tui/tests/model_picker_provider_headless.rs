@@ -240,6 +240,7 @@ fn options(socket: PathBuf, catalog: Vec<Model>) -> InteractiveOptions {
         model_catalog: catalog,
         model_configured_providers: configured_providers,
         model_recent_models: Vec::new(),
+        model_visibility_note: None,
         default_thinking_level: None,
         no_session: false,
         session: SessionSelection::New,

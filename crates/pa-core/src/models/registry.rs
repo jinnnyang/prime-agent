@@ -12,6 +12,9 @@ use crate::auth::manager::AuthStorage;
 use crate::auth::types::{AuthCredential, PRIME_INFERENCE_PROVIDER_ID};
 
 use super::catalog_chain;
+use super::catalog_visibility::{
+    catalog_visibility_for_agent_dir, CatalogVisibility, FilterSummary,
+};
 use super::custom::{apply_model_override, load_custom_models, merge_compat, CustomModelsResult};
 use super::prime_inference::is_private_prime_inference_model;
 use super::private_auth::{
@@ -96,6 +99,12 @@ pub struct ModelRegistry {
     /// The process-shared live catalog chain (`catalog_chain::catalog_for`);
     /// `resolve()` sources built-ins from it.
     catalog: std::sync::Arc<pa_models::ModelCatalog>,
+    /// The global-scope visibility filters over the provider catalog
+    /// (settings `modelCatalog`); unset means unrestricted.
+    catalog_visibility: CatalogVisibility,
+    /// The pattern-level accounting of the last [`Self::load_models`]
+    /// filter pass; surfaced next to the listings the payload serves.
+    catalog_filter_summary: FilterSummary,
 }
 
 /// Under a stored xAI subscription the provider's models switch onto the
@@ -171,6 +180,8 @@ impl ModelRegistry {
 
     fn new(auth: AuthStorage, models_json_path: Option<PathBuf>) -> Self {
         let catalog = catalog_chain::catalog_for(models_json_path.as_deref());
+        let visibility =
+            catalog_visibility_for_agent_dir(models_json_path.as_deref().and_then(Path::parent));
         let mut registry = Self {
             auth,
             models_json_path,
@@ -183,9 +194,18 @@ impl ModelRegistry {
             authorized_private_models: Vec::new(),
             authorized_team_id: None,
             catalog,
+            catalog_visibility: visibility,
+            catalog_filter_summary: FilterSummary::default(),
         };
         registry.load_models();
         registry
+    }
+
+    /// The pattern-level accounting of the last filter pass next to the
+    /// listings that show the filtered models (`/model`, `model list`).
+    #[must_use]
+    pub const fn catalog_filter_summary(&self) -> &FilterSummary {
+        &self.catalog_filter_summary
     }
 
     /// The Prime Inference credentials for the credentialed catalog layer
@@ -404,7 +424,11 @@ impl ModelRegistry {
         }
 
         let credentials = self.prime_credentials();
-        let mut built_in = self.load_built_in_models(&result, credentials.as_ref());
+        let filtered = self
+            .catalog_visibility
+            .apply(self.load_built_in_models(&result, credentials.as_ref()));
+        let mut built_in = filtered.models;
+        self.catalog_filter_summary = filtered.summary;
         built_in.extend(private_models.into_values());
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();

@@ -254,6 +254,18 @@ pub struct TelemetrySettings {
     pub local_mirror: Option<bool>,
 }
 
+/// `modelCatalog` (fork-only): user visibility filters over the provider
+/// model catalog. `allow` (non-empty) keeps only matching models;
+/// `deny` always wins; the patterns use the catalog filter grammar
+/// (`models::catalog_visibility`), and the active-model selection path is
+/// unaffected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogSettings {
+    pub allow: Option<Vec<String>>,
+    pub deny: Option<Vec<String>>,
+}
+
 /// The default time limit for user `python_repl` cells: 60 seconds.
 pub const DEFAULT_PYTHON_CELL_TIMEOUT_MS: u64 = 60_000;
 
@@ -328,6 +340,9 @@ pub struct Settings {
     /// Rust-only daemon-level model allowlist: a model outside fails loudly instead
     /// of resolving, with no fallback. `None` is unrestricted.
     pub allowed_models: Option<Vec<String>>,
+    /// Fork-only catalog visibility filters; global scope only (the catalog
+    /// chain is shared per agent dir), `None` is unrestricted.
+    pub model_catalog: Option<ModelCatalogSettings>,
     pub tree_filter_mode: Option<String>,
     /// `chatDetail`: the conversation-detail level Ctrl+O cycles and persists
     /// ("overview"/"details"/"all"); `None` reads as the `overview` startup level.

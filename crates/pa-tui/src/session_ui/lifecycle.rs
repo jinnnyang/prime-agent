@@ -70,6 +70,7 @@ impl SessionUi {
             model_catalog: options.model_catalog.clone(),
             model_configured_providers: options.model_configured_providers.clone(),
             model_recent_models: options.model_recent_models.clone(),
+            model_visibility_note: options.model_visibility_note.clone(),
             default_thinking_level: options.default_thinking_level.clone(),
             models_fetched_at: None,
             catalog_updates,

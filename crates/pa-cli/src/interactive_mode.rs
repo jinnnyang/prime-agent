@@ -466,6 +466,11 @@ fn build_tui_options(
         pa_core::models::ModelRegistry::create(auth, config.agent_dir.join("models.json"));
     registry.load_private_authorization_from_cache();
     let catalog: Vec<pa_types::ai::Model> = registry.get_available().into_iter().cloned().collect();
+    let visibility_note = (registry.catalog_filter_summary().hidden > 0).then(|| {
+        pa_tui::model_picker::catalog_visibility_note(
+            registry.catalog_filter_summary().hidden as u64,
+        )
+    });
     let configured_providers: std::collections::HashSet<String> =
         catalog.iter().map(|model| model.provider.clone()).collect();
     let settings = pa_core::settings::SettingsManager::create(&config.cwd, &config.agent_dir);
@@ -485,6 +490,7 @@ fn build_tui_options(
         model_catalog: catalog,
         model_configured_providers: configured_providers,
         model_recent_models: recent,
+        model_visibility_note: visibility_note,
         default_thinking_level,
         socket_path,
         cwd: config.cwd.clone(),

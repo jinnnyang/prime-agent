@@ -342,6 +342,7 @@ fn options_with_session(socket: PathBuf, session: SessionSelection) -> Interacti
         model_catalog: Vec::new(),
         model_configured_providers: std::collections::HashSet::default(),
         model_recent_models: Vec::new(),
+        model_visibility_note: None,
         default_thinking_level: None,
         no_session: false,
         session,
