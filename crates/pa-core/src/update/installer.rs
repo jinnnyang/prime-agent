@@ -100,37 +100,97 @@ pub fn download_base_url() -> String {
     installed_base(&install_prefix()).unwrap_or_else(|| DEFAULT_DOWNLOAD_BASE_URL.to_string())
 }
 
-/// Whether the caller explicitly pinned the download base: a set,
-/// non-empty `PRIME_AGENT_DOWNLOAD_BASE_URL` always wins over the
-/// recorded source (the escape hatch when that source is gone).
-fn download_base_overridden() -> bool {
-    std::env::var(ENV_DOWNLOAD_BASE_URL).is_ok_and(|value| !value.trim().is_empty())
+/// Whether this update run carries an explicit download-base override.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BaseOverride {
+    /// A set, non-empty `PRIME_AGENT_DOWNLOAD_BASE_URL` — the escape hatch
+    /// when the recorded source is gone; the user's own choice.
+    Explicit,
+    /// No override: the recorded install source (or the default) rides.
+    Inherited,
 }
 
-/// The effective base's provenance: `env` (the explicit override), `marker`
-/// (the recorded install source), or `default`. Surfaced for the update
-/// report and the adoption event.
+impl BaseOverride {
+    /// The caller's override state, read from the environment.
+    fn from_env() -> Self {
+        if std::env::var(ENV_DOWNLOAD_BASE_URL).is_ok_and(|value| !value.trim().is_empty()) {
+            Self::Explicit
+        } else {
+            Self::Inherited
+        }
+    }
+}
+
+/// The effective base's provenance, surfaced for the update report and the
+/// adoption event.
+#[derive(Clone, Copy)]
+pub enum DownloadBaseSource {
+    /// The explicit env override.
+    Env,
+    /// The install marker's recorded `base` line.
+    Marker,
+    /// The official bucket (no override, no recorded base).
+    Default,
+}
+
+impl DownloadBaseSource {
+    /// The fixed telemetry vocabulary for this provenance.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Env => "env",
+            Self::Marker => "marker",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// The effective base's provenance: the explicit override, else the
+/// recorded install source, else the default.
 #[must_use]
-pub fn download_base_source() -> &'static str {
-    if download_base_overridden() {
-        "env"
+pub fn download_base_source() -> DownloadBaseSource {
+    if BaseOverride::from_env() == BaseOverride::Explicit {
+        DownloadBaseSource::Env
     } else if installed_base(&install_prefix()).is_some() {
-        "marker"
+        DownloadBaseSource::Marker
     } else {
-        "default"
+        DownloadBaseSource::Default
     }
 }
 
 /// The effective base's transport kind for reports and telemetry: never
 /// the URL itself (a base can be a private mirror), only its shape.
-#[must_use]
-pub fn download_base_kind(base_url: &str) -> &'static str {
-    if base_url.trim_end_matches('/').ends_with("/releases") {
-        "github-releases"
-    } else if base_url.starts_with("http://") {
-        "http"
-    } else {
-        "https"
+#[derive(Clone, Copy)]
+pub enum DownloadBaseKind {
+    /// A GitHub releases base (the release-asset routes).
+    GithubReleases,
+    /// Plain http — only ever an explicitly consented source.
+    Http,
+    /// Any other https base.
+    Https,
+}
+
+impl DownloadBaseKind {
+    /// The fixed telemetry vocabulary for this base kind.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GithubReleases => "github-releases",
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+
+    /// The kind of one base URL.
+    #[must_use]
+    pub fn of(base_url: &str) -> Self {
+        if super::release::is_github_releases_base(base_url) {
+            Self::GithubReleases
+        } else if base_url.starts_with("http://") {
+            Self::Http
+        } else {
+            Self::Https
+        }
     }
 }
 
@@ -239,10 +299,70 @@ pub async fn run_installer(
 ) -> std::result::Result<Installed, UpdateFailure> {
     let prefix = install_prefix();
     let channel = channel.or_else(|| installed_channel(&prefix));
-    if let Some(message) = github_releases_refusal(&prefix, download_base_overridden()) {
+    // The refusal gate's override state: an explicit download-base override
+    // OR an explicit installer-script pin means the caller chose this
+    // update's source themselves — a pinned fork script can well install
+    // from a GitHub releases base, so it is never refused.
+    let caller_pinned = BaseOverride::from_env() == BaseOverride::Explicit
+        || std::env::var(ENV_INSTALLER_URL).is_ok_and(|value| !value.trim().is_empty());
+    let base_override = if caller_pinned {
+        BaseOverride::Explicit
+    } else {
+        BaseOverride::Inherited
+    };
+    if let Some(message) = github_releases_refusal(&prefix, base_override) {
         return Err(UpdateFailure { message });
     }
-    run_installer_from(&installer_script_url(channel), &prefix, channel, output).await
+    // The base this run installs from, remembered across the script's
+    // publish: the official stable script's v1 marker would otherwise
+    // erase it (see [`re_record_base`]).
+    let installed_from = std::env::var(ENV_DOWNLOAD_BASE_URL)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| installed_base(&prefix));
+    let result = run_installer_from(&installer_script_url(channel), &prefix, channel, output).await;
+    if result.is_ok() {
+        if let Some(base) = &installed_from {
+            re_record_base(&prefix, base);
+        }
+    }
+    result
+}
+
+/// Re-record the download base this funnel just installed from, into the
+/// marker the installer script wrote: the official stable script still
+/// writes a v1 marker (no `base` line), so without this a mirror-base
+/// install loses its recorded source to the FIRST successful update —
+/// the exact silent reversion issue #17 opens with. A script that already
+/// writes the base itself (this fork's scripts) passes through untouched,
+/// and an encoded (ps1-written) marker is left alone — appending ASCII to
+/// UTF-16 would corrupt it, and this funnel's scripts never write one.
+fn re_record_base(prefix: &Path, base: &str) {
+    use std::fmt::Write as _;
+    let path = prefix.join("share/prime-agent/.prime-agent-install");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return;
+    };
+    if bytes.contains(&0) || bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return;
+    }
+    let Ok(mut marker) = String::from_utf8(bytes) else {
+        return;
+    };
+    if marker.lines().any(|line| line.trim().starts_with("base ")) {
+        return;
+    }
+    if !marker.ends_with('\n') {
+        marker.push('\n');
+    }
+    let _ = writeln!(marker, "base {base}");
+    if base.starts_with("http://") {
+        let _ = writeln!(marker, "allow-http 1");
+    }
+    // The install already succeeded; a failed provenance patch must never
+    // turn it into a reported failure, so the write error is dropped by
+    // design (the next run re-records).
+    let _ = std::fs::write(&path, marker);
 }
 
 /// The recorded install source's gate: a GitHub releases base has no
@@ -251,16 +371,17 @@ pub async fn run_installer(
 /// publish). The refusal carries the way out instead of silently
 /// switching the update onto the official bucket. An explicit env
 /// override is the user's own choice and never refused.
-fn github_releases_refusal(prefix: &Path, env_override: bool) -> Option<String> {
+fn github_releases_refusal(prefix: &Path, base_override: BaseOverride) -> Option<String> {
     let base = installed_base(prefix)?;
-    (!env_override && base.trim_end_matches('/').ends_with("/releases")).then(|| {
-        format!(
-            "the recorded install source is a GitHub releases base ({base}); \
+    (base_override == BaseOverride::Inherited && super::release::is_github_releases_base(&base))
+        .then(|| {
+            format!(
+                "the recorded install source is a GitHub releases base ({base}); \
              the built-in update cannot install from there yet — rerun the \
              installer from that source, or set \
              {ENV_DOWNLOAD_BASE_URL} to override"
-        )
-    })
+            )
+        })
 }
 
 /// Run the takeover update from one explicit script URL and install
@@ -725,7 +846,7 @@ fn installer_child(
     // did not choose one, the script installs from the source the install
     // marker records (the /releases bases are refused before the script
     // runs, so every base reaching here is one the script can serve).
-    if !download_base_overridden() {
+    if BaseOverride::from_env() == BaseOverride::Inherited {
         if let Some(base) = installed_base(prefix) {
             command.env(ENV_DOWNLOAD_BASE_URL, base);
         }
@@ -1415,7 +1536,8 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         write(
             "install-rust.sh channel stable\nversion 0.10.3\nbase https://github.com/jinnnyang/prime-agent/releases\n",
         );
-        let refusal = github_releases_refusal(&prefix, false).expect("the GitHub base refuses");
+        let refusal = github_releases_refusal(&prefix, BaseOverride::Inherited)
+            .expect("the GitHub base refuses");
         assert!(
             refusal.contains("GitHub releases base"),
             "the refusal names the source: {refusal}"
@@ -1425,15 +1547,74 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             "the refusal carries the override knob"
         );
         assert_eq!(
-            github_releases_refusal(&prefix, true),
+            github_releases_refusal(&prefix, BaseOverride::Explicit),
             None,
             "an explicit override is the user's own choice"
         );
         write("install-rust.sh channel stable\nversion 0.10.3\nbase https://mirror.example/dl\n");
         assert_eq!(
-            github_releases_refusal(&prefix, false),
+            github_releases_refusal(&prefix, BaseOverride::Inherited),
             None,
             "an R2-style base proceeds"
+        );
+    }
+
+    /// The post-install provenance patch: the official stable script's v1
+    /// write (no `base` line) gets the run's base re-recorded — the
+    /// silent-reversion bug the spec review caught — while a script that
+    /// already writes the base, an http source's consent line, and an
+    /// encoded marker each behave as designed.
+    #[test]
+    fn re_record_base_restores_the_source_the_official_script_erased() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let prefix = dir.path().join("prefix");
+        let share = prefix.join("share/prime-agent");
+        std::fs::create_dir_all(&share).unwrap();
+        let marker = share.join(".prime-agent-install");
+        // The v1 marker the official stable script wrote over the recorded
+        // source.
+        std::fs::write(&marker, "install-rust.sh channel stable\nversion 9.9.9\n").unwrap();
+        re_record_base(&prefix, "https://mirror.example/dl");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "install-rust.sh channel stable\nversion 9.9.9\nbase https://mirror.example/dl\n",
+            "the erased source is re-recorded after the v1 write"
+        );
+        // An http source records its transport consent too.
+        std::fs::write(&marker, "install-rust.sh channel stable\nversion 9.9.9\n").unwrap();
+        re_record_base(&prefix, "http://intranet.example/dl");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "install-rust.sh channel stable\nversion 9.9.9\nbase http://intranet.example/dl\nallow-http 1\n",
+            "an http source re-records with its consent line"
+        );
+        // A script-written v2 marker passes through untouched.
+        std::fs::write(
+            &marker,
+            "install-rust.sh channel stable\nversion 9.9.9\nbase https://fork.example/releases\n",
+        )
+        .unwrap();
+        re_record_base(&prefix, "https://mirror.example/dl");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "install-rust.sh channel stable\nversion 9.9.9\nbase https://fork.example/releases\n",
+            "a script that recorded its own base is never overwritten"
+        );
+        // An encoded (ps1-written) marker is left alone: appending ASCII to
+        // UTF-16 would corrupt it.
+        let text: Vec<u16> = "install-rust.sh channel stable\nversion 1\n"
+            .encode_utf16()
+            .collect();
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in &text {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(&marker, &bytes).unwrap();
+        re_record_base(&prefix, "https://mirror.example/dl");
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            bytes,
+            "an encoded marker is never patched"
         );
     }
 

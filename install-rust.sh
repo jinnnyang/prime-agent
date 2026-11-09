@@ -2692,15 +2692,20 @@ fi
 # user instead).
 # The first two lines are the ownership shape the update funnel and the
 # rollback grep key on; the `base`/`allow-http`/`prefix` lines record the
-# EFFECTIVE source (this run's resolved download base, transport consent,
-# and prefix spelling) so a later update follows the source the install
-# came from instead of silently switching to the official bucket —
-# install.ps1 writes the exact same lines.
+# EFFECTIVE source so a later update follows the source the install came
+# from instead of silently switching to the official bucket — install.ps1
+# writes the exact same lines for its channel install. Only the channel
+# mode CONSULTED a download base (the local modes — rollback, archive —
+# install from a kept generation or a given tarball), so only it records
+# one: a local-mode install recording the never-fetched default would be
+# a fabricated source the next update would refuse on.
 {
   printf 'install-rust.sh channel %s\n' "$CHANNEL"
   printf 'version %s\n' "$VERSION"
-  printf 'base %s\n' "$BASE_URL"
-  case "$BASE_URL" in http://*) printf 'allow-http 1\n' ;; esac
+  if [ "$MODE" = channel ]; then
+    printf 'base %s\n' "$BASE_URL"
+    case "$BASE_URL" in http://*) printf 'allow-http 1\n' ;; esac
+  fi
   printf 'prefix %s\n' "$PREFIX"
 } > "${stage}/.prime-agent-install"
 fi

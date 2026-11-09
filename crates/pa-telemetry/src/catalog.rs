@@ -1147,7 +1147,7 @@ const UPDATE_EVENTS: &[EventRule] = &[
     },
     EventRule {
         name: "update_source_resolved",
-        since: 1,
+        since: 2,
         properties: &[
             (
                 "source",

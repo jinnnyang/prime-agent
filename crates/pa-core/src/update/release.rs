@@ -57,16 +57,23 @@ pub fn update_user_agent(version: &str) -> String {
     )
 }
 
+/// Whether a download base is a GitHub releases base (a base ending in
+/// `/releases` — the fork installer's default): one shape, one predicate,
+/// shared by the manifest route, the update refusal, and the base-kind
+/// report (the same detection the install scripts apply).
+pub(crate) fn is_github_releases_base(base_url: &str) -> bool {
+    base_url.trim_end_matches('/').ends_with("/releases")
+}
+
 /// The channel manifest's URL at a download base: the R2-style layout
-/// serves it at `<base>/<latest.json|beta.json>`; a base ending in
-/// `/releases` (a GitHub releases base — the fork installer's default)
+/// serves it at `<base>/<latest.json|beta.json>`; a GitHub releases base
 /// has no bare pointer file, so the manifest rides the release-asset
 /// routes: the `latest` redirect for stable, the rolling `nightly` tag
 /// for beta (the same adaptation install-rust.sh applies).
 #[must_use]
 pub fn manifest_url(base_url: &str, channel: UpdateChannel) -> String {
     let base = base_url.trim_end_matches('/');
-    if base.ends_with("/releases") {
+    if is_github_releases_base(base) {
         match channel {
             UpdateChannel::Stable => format!("{base}/latest/download/{}", channel.manifest_path()),
             UpdateChannel::Nightly => {

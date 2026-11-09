@@ -166,8 +166,8 @@ pub fn run(options: &UpdateOptions) -> i32 {
     let base = installer::download_base_url();
     record_lifecycle_event(|client| {
         pa_telemetry::UpdateSourceResolved {
-            source,
-            base_kind: installer::download_base_kind(&base),
+            source: source.as_str(),
+            base_kind: installer::DownloadBaseKind::of(&base).as_str(),
         }
         .track(client);
     });
