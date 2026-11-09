@@ -2690,8 +2690,19 @@ fi
 # unrelated directory that happens to contain a `prime-agent` entry is never
 # adopted, moved aside, or swept (the refusal below sends it back to the
 # user instead).
-printf 'install-rust.sh channel %s\nversion %s\n' "$CHANNEL" "$VERSION" \
-  > "${stage}/.prime-agent-install"
+# The first two lines are the ownership shape the update funnel and the
+# rollback grep key on; the `base`/`allow-http`/`prefix` lines record the
+# EFFECTIVE source (this run's resolved download base, transport consent,
+# and prefix spelling) so a later update follows the source the install
+# came from instead of silently switching to the official bucket —
+# install.ps1 writes the exact same lines.
+{
+  printf 'install-rust.sh channel %s\n' "$CHANNEL"
+  printf 'version %s\n' "$VERSION"
+  printf 'base %s\n' "$BASE_URL"
+  case "$BASE_URL" in http://*) printf 'allow-http 1\n' ;; esac
+  printf 'prefix %s\n' "$PREFIX"
+} > "${stage}/.prime-agent-install"
 fi
 
 # A lock left by the pre-takeover installer (name .prime-agent-rust-install.lock):

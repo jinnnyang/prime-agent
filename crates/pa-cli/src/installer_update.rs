@@ -81,6 +81,44 @@ pub fn requested_installer_channel(flag: Option<UpdateChannel>) -> &'static str 
     installer_channel(update_channel(flag))
 }
 
+/// Record one lifecycle telemetry event without gating the update: the
+/// one-shot runtime exists only when recording is enabled, and a failure
+/// to record never changes any funnel behavior or exit code.
+fn record_lifecycle_event(record: impl FnOnce(&pa_telemetry::TelemetryClient)) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    let agent_dir = crate::config::get_agent_dir();
+    let settings = pa_core::settings::SettingsManager::create(&cwd, &agent_dir);
+    if crate::mode::telemetry_disabled(&settings) {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    runtime.block_on(async {
+        let client = pa_core::session_engine::telemetry::build_client(&settings, &agent_dir);
+        record(&client);
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(pa_tui::interactive::TELEMETRY_EXIT_TIMEOUT_MS),
+            client.shutdown(),
+        )
+        .await;
+    });
+}
+
+/// The plain-http warning both update surfaces print: the base (recorded
+/// or overridden) carries an install source that was only accepted with
+/// explicit consent, and every update from it deserves the same notice.
+fn warn_http_base(base: &str) {
+    if base.starts_with("http://") {
+        println!("Warning:  the effective download base is plain http://; the install source was recorded with that transport");
+    }
+}
+
 /// Run the update command: the funnel (the installer script owns the
 /// whole move) or the `--check` report. Returns the process exit code.
 pub fn run(options: &UpdateOptions) -> i32 {
@@ -95,37 +133,14 @@ pub fn run(options: &UpdateOptions) -> i32 {
     };
     if let Some(kind) = homebrew_kind {
         println!("{}", homebrew::upgrade_instruction(kind));
-        // The refusal must not depend on telemetry. A one-shot runtime is
-        // only needed when recording is enabled; failure to record never
+        // The refusal must not depend on telemetry: failure to record never
         // changes the instruction or the no-install exit code.
-        if let Ok(cwd) = std::env::current_dir() {
-            let agent_dir = crate::config::get_agent_dir();
-            let settings = pa_core::settings::SettingsManager::create(&cwd, &agent_dir);
-            let telemetry_runtime = (!crate::mode::telemetry_disabled(&settings))
-                .then(|| {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                })
-                .and_then(Result::ok);
-            if let Some(runtime) = telemetry_runtime {
-                runtime.block_on(async {
-                    let client =
-                        pa_core::session_engine::telemetry::build_client(&settings, &agent_dir);
-                    pa_telemetry::UpdateHomebrewRefusal {
-                        kind: kind.as_str(),
-                    }
-                    .track(&client);
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_millis(
-                            pa_tui::interactive::TELEMETRY_EXIT_TIMEOUT_MS,
-                        ),
-                        client.shutdown(),
-                    )
-                    .await;
-                });
+        record_lifecycle_event(|client| {
+            pa_telemetry::UpdateHomebrewRefusal {
+                kind: kind.as_str(),
             }
-        }
+            .track(client);
+        });
         return SELF_UPDATE_NOT_ATTEMPTED_EXIT_CODE;
     }
     let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
@@ -143,6 +158,20 @@ pub fn run(options: &UpdateOptions) -> i32 {
     // fetches from, and the banner must not claim a source the run will
     // not use.
     let channel = requested_installer_channel(options.channel);
+    // The adoption record for source stickiness: which base this update
+    // follows and of what kind — never the URL itself. Recorded before
+    // the funnel so a refused or failed update still counts the
+    // resolution; recording never gates the update.
+    let source = installer::download_base_source();
+    let base = installer::download_base_url();
+    record_lifecycle_event(|client| {
+        pa_telemetry::UpdateSourceResolved {
+            source,
+            base_kind: installer::download_base_kind(&base),
+        }
+        .track(client);
+    });
+    warn_http_base(&base);
     println!(
         "Updating to the latest Rust build — fetching the installer from {}:",
         installer::installer_script_url(Some(channel))
@@ -263,9 +292,11 @@ async fn run_check(flag: Option<UpdateChannel>) -> i32 {
     let running = crate::config::version();
     let channel = update_channel(flag);
     let base = installer::download_base_url();
+    let manifest = pa_core::update::release::manifest_url(&base, channel);
     println!("Platform: {target}");
     println!("Running:  {running}");
     println!("Channel:  {}", channel.wire_name());
+    warn_http_base(&base);
     let latest = pa_core::update::release::latest_release(
         running,
         Some(channel),
@@ -275,17 +306,12 @@ async fn run_check(flag: Option<UpdateChannel>) -> i32 {
     .await;
     let Ok(Some(latest)) = latest else {
         eprintln!(
-            "Error: could not read the {} release manifest at {base}/{}",
-            channel.wire_name(),
-            channel.manifest_path()
+            "Error: could not read the {} release manifest at {manifest}",
+            channel.wire_name()
         );
         return 1;
     };
-    println!(
-        "Latest:   {} ({base}/{})",
-        latest.version,
-        channel.manifest_path()
-    );
+    println!("Latest:   {} ({manifest})", latest.version);
     println!("{}", check_verdict(&latest, running, channel, flag));
     0
 }

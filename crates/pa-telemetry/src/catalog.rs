@@ -1146,6 +1146,20 @@ const UPDATE_EVENTS: &[EventRule] = &[
         ],
     },
     EventRule {
+        name: "update_source_resolved",
+        since: 1,
+        properties: &[
+            (
+                "source",
+                required(enum_rule(&["env", "marker", "default"], "default")),
+            ),
+            (
+                "base_kind",
+                required(enum_rule(&["github-releases", "http", "https"], "https")),
+            ),
+        ],
+    },
+    EventRule {
         name: "update_download_started",
         since: 1,
         properties: &[

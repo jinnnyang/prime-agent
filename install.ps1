@@ -579,9 +579,17 @@ if (-not (Test-Path $payloadExe -PathType Leaf)) { Fail "the tarball did not con
 Step-Ok 'extracted' $expectedFile
 
 # The ownership marker (install-rust.sh's exact write shape — the update
-# funnel's channel-stickiness read keys on it).
+# funnel's channel-stickiness read keys on it). The first two lines are
+# the ownership shape the update funnel and the rollback grep key on; the
+# `base`/`allow-http`/`prefix` lines record the EFFECTIVE source (this
+# run's resolved download base, transport consent, and prefix spelling)
+# so a later update follows the source the install came from instead of
+# silently switching to the official bucket — install-rust.sh writes the
+# exact same lines.
 $channelLine = "install-rust.sh channel $channel"
-$marker = "$channelLine`nversion $version"
+$marker = "$channelLine`nversion $version`nbase $baseUrl"
+if ($baseUrl.StartsWith('http://')) { $marker += "`nallow-http 1" }
+$marker += "`nprefix $prefix"
 # -Encoding Ascii keeps the marker byte-exact: Set-Content's default
 # encoding follows $PSDefaultParameterValues['*:Encoding'] (UTF-16 or a
 # BOM), and the update funnel's channel-stickiness read + the rollback's

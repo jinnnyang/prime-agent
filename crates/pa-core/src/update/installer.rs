@@ -85,13 +85,53 @@ pub fn installer_script_url(channel: Option<&str>) -> String {
 }
 
 /// The download base `--check` reads the channel manifest from: the
-/// installer's own knob, else its default.
+/// installer's own knob, else the install marker's recorded `base` line
+/// (an update follows the source the install came from), else the default.
+/// An explicit env override always wins — the escape hatch when the
+/// recorded base is gone.
 #[must_use]
 pub fn download_base_url() -> String {
-    std::env::var(ENV_DOWNLOAD_BASE_URL)
+    if let Some(base) = std::env::var(ENV_DOWNLOAD_BASE_URL)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_DOWNLOAD_BASE_URL.to_string())
+    {
+        return base;
+    }
+    installed_base(&install_prefix()).unwrap_or_else(|| DEFAULT_DOWNLOAD_BASE_URL.to_string())
+}
+
+/// Whether the caller explicitly pinned the download base: a set,
+/// non-empty `PRIME_AGENT_DOWNLOAD_BASE_URL` always wins over the
+/// recorded source (the escape hatch when that source is gone).
+fn download_base_overridden() -> bool {
+    std::env::var(ENV_DOWNLOAD_BASE_URL).is_ok_and(|value| !value.trim().is_empty())
+}
+
+/// The effective base's provenance: `env` (the explicit override), `marker`
+/// (the recorded install source), or `default`. Surfaced for the update
+/// report and the adoption event.
+#[must_use]
+pub fn download_base_source() -> &'static str {
+    if download_base_overridden() {
+        "env"
+    } else if installed_base(&install_prefix()).is_some() {
+        "marker"
+    } else {
+        "default"
+    }
+}
+
+/// The effective base's transport kind for reports and telemetry: never
+/// the URL itself (a base can be a private mirror), only its shape.
+#[must_use]
+pub fn download_base_kind(base_url: &str) -> &'static str {
+    if base_url.trim_end_matches('/').ends_with("/releases") {
+        "github-releases"
+    } else if base_url.starts_with("http://") {
+        "http"
+    } else {
+        "https"
+    }
 }
 
 /// The install prefix the launcher probe reads (`PRIME_AGENT_RUST_PREFIX`,
@@ -199,7 +239,28 @@ pub async fn run_installer(
 ) -> std::result::Result<Installed, UpdateFailure> {
     let prefix = install_prefix();
     let channel = channel.or_else(|| installed_channel(&prefix));
+    if let Some(message) = github_releases_refusal(&prefix, download_base_overridden()) {
+        return Err(UpdateFailure { message });
+    }
     run_installer_from(&installer_script_url(channel), &prefix, channel, output).await
+}
+
+/// The recorded install source's gate: a GitHub releases base has no
+/// fixed-route installer script, so the script this funnel fetches cannot
+/// install from it (the release-asset route lands with the script-asset
+/// publish). The refusal carries the way out instead of silently
+/// switching the update onto the official bucket. An explicit env
+/// override is the user's own choice and never refused.
+fn github_releases_refusal(prefix: &Path, env_override: bool) -> Option<String> {
+    let base = installed_base(prefix)?;
+    (!env_override && base.trim_end_matches('/').ends_with("/releases")).then(|| {
+        format!(
+            "the recorded install source is a GitHub releases base ({base}); \
+             the built-in update cannot install from there yet — rerun the \
+             installer from that source, or set \
+             {ENV_DOWNLOAD_BASE_URL} to override"
+        )
+    })
 }
 
 /// Run the takeover update from one explicit script URL and install
@@ -469,6 +530,29 @@ fn installed_version(prefix: &Path) -> Option<String> {
     (!version.is_empty()).then(|| version.to_string())
 }
 
+/// The installed payload's download base, read from the install marker's
+/// "base <url>" line (the installer records the base it resolved — the env
+/// override or its own default — so updates can follow the install source
+/// instead of silently switching to the official bucket). `None` when the
+/// marker is absent, predates the line, or fails the same ownership gate
+/// as [`installed_channel`]: a foreign marker must never steer the update
+/// onto an attacker's download base. The value must carry an http(s)
+/// scheme — anything else is a corrupt marker, not a base.
+#[must_use]
+pub fn installed_base(prefix: &Path) -> Option<String> {
+    let bytes = std::fs::read(prefix.join("share/prime-agent/.prime-agent-install")).ok()?;
+    let bytes = normalize_marker_bytes(&bytes);
+    let marker = String::from_utf8_lossy(&bytes);
+    // The same ownership proof as the channel read: a foreign marker never
+    // steers the update onto an attacker's download base.
+    installed_channel(prefix)?;
+    let base = marker
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("base "))?
+        .trim();
+    (base.starts_with("https://") || base.starts_with("http://")).then(|| base.to_string())
+}
+
 /// The installed payload's channel, read from the install marker (the
 /// installer's own `.prime-agent-install` under the prefix's share dir;
 /// its first line is "channel <name>"). `None` when the marker is absent
@@ -636,6 +720,15 @@ fn installer_child(
     // stable render, so a beta install would silently switch channels).
     if let Some(channel) = channel.or_else(|| installed_channel(prefix)) {
         command.env(ENV_RELEASE_CHANNEL, channel);
+    }
+    // The same stickiness for the download base: when the caller's shell
+    // did not choose one, the script installs from the source the install
+    // marker records (the /releases bases are refused before the script
+    // runs, so every base reaching here is one the script can serve).
+    if !download_base_overridden() {
+        if let Some(base) = installed_base(prefix) {
+            command.env(ENV_DOWNLOAD_BASE_URL, base);
+        }
     }
     command
 }
@@ -918,6 +1011,64 @@ mod tests {
         assert_eq!(installed_channel(&prefix), None);
     }
 
+    /// The marker's recorded download base: a v2 marker carries the source
+    /// the install came from (http and https alike — the transport warning
+    /// is the update's to print), a pre-base marker reads as `None` (the
+    /// update then rides the default bucket), and a foreign or corrupt
+    /// marker never steers the funnel onto another base.
+    #[test]
+    fn installed_base_reads_the_publish_marker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let prefix = dir.path().join("prefix");
+        let share = prefix.join("share/prime-agent");
+        std::fs::create_dir_all(&share).unwrap();
+        let write = |text: &str| std::fs::write(share.join(".prime-agent-install"), text).unwrap();
+        write("install-rust.sh channel stable\nversion 0.10.3\n");
+        assert_eq!(installed_base(&prefix), None, "a v1 marker records no base");
+        write(
+            "install-rust.sh channel stable\nversion 0.10.3\nbase https://mirror.example/releases\n",
+        );
+        assert_eq!(
+            installed_base(&prefix).as_deref(),
+            Some("https://mirror.example/releases")
+        );
+        write(
+            "install-rust.sh channel stable\nversion 0.10.3\nbase http://intranet.example/dl\nallow-http 1\nprefix /opt/prime\n",
+        );
+        assert_eq!(
+            installed_base(&prefix).as_deref(),
+            Some("http://intranet.example/dl"),
+            "an http base reads back (the transport warning is the update's)"
+        );
+        write("install-rust.sh channel stable\nversion 0.10.3\nbase ftp://attacker.example\n");
+        assert_eq!(
+            installed_base(&prefix),
+            None,
+            "a non-http scheme is a corrupt marker, not a base"
+        );
+        write("other installer channel stable\nversion 1\nbase https://attacker.example\n");
+        assert_eq!(
+            installed_base(&prefix),
+            None,
+            "a foreign marker never steers the base"
+        );
+        // A ps1-encoded v2 marker reads back through the normalization.
+        let text: Vec<u16> =
+            "install-rust.sh channel stable\nversion 1\nbase https://mirror.example\n"
+                .encode_utf16()
+                .collect();
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in &text {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(share.join(".prime-agent-install"), bytes).unwrap();
+        assert_eq!(
+            installed_base(&prefix).as_deref(),
+            Some("https://mirror.example"),
+            "the ps1-era encoding reads back as its ASCII base"
+        );
+    }
+
     /// Only the payload binary of a marked installer tree is
     /// installer-owned; the marker's version line is the installed
     /// version.
@@ -1095,19 +1246,29 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         (root, preserve, prefix)
     }
 
-    /// The funnel URL follows the channel: stable fetches the official
-    /// domain's install endpoint, nightly (beta) fetches `install-beta.sh`
-    /// from the download base (the domain forwards only `install.sh`), and
-    /// the override pins both.
+    /// The update knobs follow the channel, the override, and the recorded
+    /// source: stable fetches the official domain's install endpoint,
+    /// nightly (beta) fetches `install-beta.sh` from the download base (the
+    /// domain forwards only `install.sh`), the override pins both — and the
+    /// download base itself rides the install marker's recorded `base`
+    /// line, with the explicit override as the escape hatch and the
+    /// installer child carrying the recorded base to the script it execs.
     #[test]
-    fn the_installer_url_follows_the_channel() {
+    fn the_update_knobs_follow_the_channel_and_the_recorded_source() {
         // The knobs are SAVED and RESTORED around the probe: the env is
         // process-global, so a pinned value in the surrounding
         // environment must survive it.
-        let prior_override = std::env::var(ENV_INSTALLER_URL).ok();
-        let prior_base = std::env::var(ENV_DOWNLOAD_BASE_URL).ok();
+        let prior_override = std::env::var_os(ENV_INSTALLER_URL);
+        let prior_base = std::env::var_os(ENV_DOWNLOAD_BASE_URL);
+        let prior_prefix = std::env::var_os(ENV_PREFIX);
         std::env::remove_var(ENV_INSTALLER_URL);
         std::env::remove_var(ENV_DOWNLOAD_BASE_URL);
+        // The prefix is pinned to a SANDBOX from the start: the download
+        // base now reads the install marker through the prefix, so an
+        // unpinned probe would consult the real home's marker and depend
+        // on the machine it runs on.
+        let (root, _preserve, prefix) = sandbox();
+        std::env::set_var(ENV_PREFIX, &prefix);
         assert_eq!(
             installer_script_url(Some("stable")),
             "https://app.primeintellect.ai/prime-agent/install.sh"
@@ -1132,9 +1293,57 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             installer_script_url(Some("stable")),
             "http://127.0.0.1:9/pinned.sh"
         );
+        // The download base follows the recorded source: with the knobs
+        // clean, a v2 marker's `base` line is the effective base, and the
+        // installer child carries it to the script it execs (the child's
+        // explicit env, not the inherited one).
+        std::env::remove_var(ENV_INSTALLER_URL);
+        std::env::remove_var(ENV_DOWNLOAD_BASE_URL);
+        let share = prefix.join("share/prime-agent");
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::write(
+            share.join(".prime-agent-install"),
+            "install-rust.sh channel stable\nversion 0.10.3\nbase https://mirror.example/dl\n",
+        )
+        .unwrap();
+        std::env::set_var(ENV_PREFIX, &prefix);
+        assert_eq!(
+            download_base_url(),
+            "https://mirror.example/dl",
+            "without an override the recorded source rides"
+        );
+        let child_base = || {
+            installer_child(Path::new("/bin/sh"), &prefix, None)
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == ENV_DOWNLOAD_BASE_URL)
+                .and_then(|(_, value)| value)
+                .map(std::ffi::OsStr::to_string_lossy)
+                .map(|value| value.to_string())
+        };
+        assert_eq!(
+            child_base().as_deref(),
+            Some("https://mirror.example/dl"),
+            "the recorded base rides the child's env"
+        );
+        // The explicit override wins for the base too, and the child then
+        // inherits the caller's choice instead of pinning the marker's.
+        std::env::set_var(ENV_DOWNLOAD_BASE_URL, "https://explicit.example/");
+        assert_eq!(
+            download_base_url(),
+            "https://explicit.example/",
+            "the explicit override is the escape hatch"
+        );
+        assert_eq!(
+            child_base(),
+            None,
+            "an overridden base is inherited, never re-pinned from the marker"
+        );
+        drop(root);
         for (name, prior) in [
             (ENV_INSTALLER_URL, prior_override),
             (ENV_DOWNLOAD_BASE_URL, prior_base),
+            (ENV_PREFIX, prior_prefix),
         ] {
             match prior {
                 Some(value) => std::env::set_var(name, value),
@@ -1189,6 +1398,42 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             running_commit("2.31.4"),
             None,
             "the TypeScript product's version never reads as a rust commit"
+        );
+    }
+
+    /// A GitHub releases base (no fixed-route installer script) refuses the
+    /// funnel with the way out instead of silently switching sources; an
+    /// explicit override is the user's own choice and never refused, and a
+    /// non-releases base proceeds.
+    #[test]
+    fn a_github_releases_base_refuses_the_funnel_with_the_way_out() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let prefix = dir.path().join("prefix");
+        let share = prefix.join("share/prime-agent");
+        std::fs::create_dir_all(&share).unwrap();
+        let write = |text: &str| std::fs::write(share.join(".prime-agent-install"), text).unwrap();
+        write(
+            "install-rust.sh channel stable\nversion 0.10.3\nbase https://github.com/jinnnyang/prime-agent/releases\n",
+        );
+        let refusal = github_releases_refusal(&prefix, false).expect("the GitHub base refuses");
+        assert!(
+            refusal.contains("GitHub releases base"),
+            "the refusal names the source: {refusal}"
+        );
+        assert!(
+            refusal.contains(ENV_DOWNLOAD_BASE_URL),
+            "the refusal carries the override knob"
+        );
+        assert_eq!(
+            github_releases_refusal(&prefix, true),
+            None,
+            "an explicit override is the user's own choice"
+        );
+        write("install-rust.sh channel stable\nversion 0.10.3\nbase https://mirror.example/dl\n");
+        assert_eq!(
+            github_releases_refusal(&prefix, false),
+            None,
+            "an R2-style base proceeds"
         );
     }
 
