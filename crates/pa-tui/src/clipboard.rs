@@ -226,6 +226,13 @@ const PIPE_POLL: Duration = Duration::from_millis(20);
 /// Run `program` with `text` on its stdin: a helper that does not finish
 /// inside the cap is killed and reported as a failed copy.
 fn pipe_to(program: &str, args: &[&str], text: &str) -> bool {
+    pipe_bytes(program, args, text.as_bytes().to_vec())
+}
+
+/// Run `program` with raw `payload` bytes on its stdin: the bounded wait and
+/// failure reporting of `pipe_to`, for helpers whose stdin contract is a
+/// byte-level encoding (`clip.exe`).
+fn pipe_bytes(program: &str, args: &[&str], payload: Vec<u8>) -> bool {
     let Ok(mut child) = Command::new(program)
         .args(args)
         .stdin(Stdio::piped())
@@ -240,7 +247,6 @@ fn pipe_to(program: &str, args: &[&str], text: &str) -> bool {
     // cannot hang the input loop.
     let write_result = {
         let stdin = child.stdin.take();
-        let payload = text.as_bytes().to_vec();
         let (tx, rx) = std::sync::mpsc::channel::<bool>();
         std::thread::spawn(move || {
             let _ = tx.send(stdin.is_some_and(|mut stdin| stdin.write_all(&payload).is_ok()));
@@ -311,6 +317,21 @@ fn copy_to_x11(text: &str) -> bool {
         || pipe_to("xsel", &["--clipboard", "--input"], text)
 }
 
+/// `clip.exe` reads its stdin as UTF-16 marked with a BOM, or as the active
+/// ANSI code page: raw UTF-8 bytes hit CP936-class pages and the copy arrives
+/// mojibake-transformed (#21). The BOM makes the payload code-page independent
+/// (the system may ship as 936 or as UTF-8 "worldwide language support").
+fn clip_stdin_payload(text: &str) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(2 + text.len() * 2);
+    payload.extend_from_slice(&[0xFF, 0xFE]);
+    payload.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+    payload
+}
+
+fn pipe_to_clip(text: &str) -> bool {
+    pipe_bytes("clip", &[], clip_stdin_payload(text))
+}
+
 /// Copy text using a local platform tool or request delivery via the terminal.
 /// A terminal request has no acknowledgement from the local clipboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,7 +378,7 @@ fn copy_with_env(text: &str, sink: &mut OscSink, env: &Env) -> Result<CopyOutcom
     } else {
         match std::env::consts::OS {
             "macos" => pipe_to("pbcopy", &[], text),
-            "windows" => pipe_to("clip", &[], text),
+            "windows" => pipe_to_clip(text),
             _ => copy_on_linux(text, env),
         }
     };
@@ -524,5 +545,19 @@ mod tests {
             }
             OscSink::Stdout => panic!("the buffer sink captured nothing"),
         }
+    }
+
+    #[test]
+    fn the_clip_payload_is_bom_marked_utf16le_regardless_of_the_code_page() {
+        // Raw UTF-8 bytes are what a CP936-class code page decodes into
+        // mojibake (#21); the BOM-marked UTF-16 payload cannot be confused
+        // with whichever ANSI page the machine ships.
+        let payload = clip_stdin_payload("把产物部署过去");
+        assert_eq!(&payload[..2], &[0xFF, 0xFE]);
+        let expected: Vec<u8> = "把产物部署过去"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(&payload[2..], expected.as_slice());
     }
 }
