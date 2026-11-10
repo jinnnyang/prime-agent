@@ -3,6 +3,18 @@
 Release notes for Prime Agent. Historical TypeScript release notes are
 recorded in the [TypeScript changelog](https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.8/packages/coding-agent/CHANGELOG.md).
 
+## [0.10.4] - 2026-11-10
+
+- Factory json output ports now also bind from a bare JSON object that ends the settle answer (a plain-text tail after prose, a fence that lost its markers, a punctuation-dirty tail), instead of failing the settle with "no JSON object containing output" and burning a re-admission.
+- The factory's settle-capture cap rose from 8,192 to 65,536 characters, at parity with the 64 KiB bound the host already puts on `rlm.collect`'s answer text. A settled child's fenced JSON output longer than the old cap was truncated mid-object before the parse and failed capture although the envelope carried the whole answer; one that fits the collect bound now binds whole.
+- Fixed the installers rejecting a release whose `SHA256SUMS` rows use the coreutils binary marker (`digest *file`), which broke every Windows install of 0.10.3 with "SHA256SUMS ... has no line for ...".
+- A GitHub-releases install source now updates in place: the release pipeline attaches the rendered installer pairs (`install.sh`/`install.ps1` on stable releases, `install-beta.sh`/`install-beta.ps1` on the rolling nightly), and the built-in update fetches its installer from that recorded base's release-asset routes instead of refusing or falling back to the official script.
+- The install marker now records the download base (plus http consent and prefix) the install came from, and `prime-agent update`/`--check` follow that recorded source instead of always the official bucket.
+- Added `modelCatalog.allow`/`modelCatalog.deny` settings: hide stale or irrelevant models from every catalog listing (`/model`, `model list`, sign-in) with a "N model(s) hidden" summary.
+- Model catalog source is now self-hosted: the shipped client fetches and bundles the catalog from the fork's `prime-agent-catalog` instead of the upstream repo.
+- `rlm.end_turn()`: a sanctioned terminal programmatic call in the Python REPL ends the turn — the host marks the executing cell, the tool result confirms "turn ended", and no further assistant response is streamed. A tool batch now terminates on ANY end-turn result instead of requiring every result to terminate, so work cells and the end-turn call in one message both execute and the turn still ends. Bedrock joins consecutive user turns, so an ended turn's history does not break the next request there.
+- A turn no longer ends silently when the model's final reply has no visible answer or was cut off at its output limit: the reply is retried once, and a second failure ends the turn with a visible error (ACP clients receive an error instead of `end_turn`). Harness notices and agent messages may still be acknowledged silently.
+- Fixed the environment-dependent Windows test failures that hid real Windows bugs (incident-notice rotation identity via FILE_ID_INFO, backslash-mangled trace parent paths, append-only reopen for `set_len`), and gated the unix-only batteries (the inode-anchored windowed session store, npm/git child-process flows) behind `#[cfg(unix)]` with stated reasons, so the Windows dev box runs green like Linux CI.
 ## [0.10.3] - 2026-11-04
 
 - Concurrent OAuth credential lookups now keep the refresh flight reserved until the refreshed credential is committed and reloaded, preventing a second lookup from reusing the expired refresh token between fetch and persistence.

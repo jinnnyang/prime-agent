@@ -1,1 +1,0 @@
-- The install marker now records the download base (plus http consent and prefix) the install came from, and `prime-agent update`/`--check` follow that recorded source instead of always the official bucket.

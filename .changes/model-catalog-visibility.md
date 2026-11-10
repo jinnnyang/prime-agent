@@ -1,1 +1,0 @@
-- Model catalog source is now self-hosted: the shipped client fetches and bundles the catalog from the fork's `prime-agent-catalog` instead of the upstream repo.
