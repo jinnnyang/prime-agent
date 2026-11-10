@@ -328,7 +328,11 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runs-on: macos-14
+            # Both darwin legs share the macos-15 M-series pool: the
+            # macos-14 label stopped scheduling mid-November 2026 (the
+            # "macos-14-arm64-us-default" configuration is not supported
+            # any more), and both legs were native arm64 builds before.
+            runs-on: macos-15
           # The x86_64 leg cross-compiles on the Apple-silicon pool: rustc
           # and the Xcode linker build either darwin arch from an M-series
           # host, and the M-pool links this binary ~2.2x faster than the
