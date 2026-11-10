@@ -244,38 +244,100 @@ fn a_nightly_update_fetches_install_beta_from_the_download_base() {
     sandbox.assert_session_preserved();
 }
 
-/// A recorded GitHub releases source refuses the built-in update with the
-/// way out (issue #17's PR-1 boundary): no installer is fetched, the
-/// previous install and its marker are kept, and the refusal names the
-/// source and the override knob.
+/// A recorded GitHub releases source installs through its release assets:
+/// the funnel fetches the installer from the base's `latest/download/`
+/// route, passes the recorded base to the script it execs, and the
+/// official script's V1 marker write keeps the recorded source through the
+/// funnel's post-install re-record (issue #17's PR-2, end to end).
 #[test]
-fn a_github_releases_source_refuses_the_update_and_keeps_the_install() {
+fn a_github_releases_source_installs_through_its_release_assets() {
     let sandbox = Sandbox::new();
+    // The base's release-asset route: the script rides
+    // <base>/latest/download/install.sh (the `latest` release's asset).
+    // No installer pin: the funnel derives the route from the marker's
+    // base (the mock serves exactly that path).
+    let base = format!(
+        "{}/releases",
+        serve_at(
+            "/releases/latest/download/install.sh",
+            OFFICIAL_STYLE_INSTALLER
+        )
+    );
     let share = sandbox.prefix.join("share/prime-agent");
     std::fs::create_dir_all(&share).expect("share dir");
-    let marker = "install-rust.sh channel stable\nversion 0.10.3\nbase https://github.com/jinnnyang/prime-agent/releases\n";
-    std::fs::write(share.join(".prime-agent-install"), marker).expect("install marker");
+    std::fs::write(
+        share.join(".prime-agent-install"),
+        format!("install-rust.sh channel stable\nversion 0.10.3\nbase {base}\n"),
+    )
+    .expect("install marker");
     let output = prime_agent(&["update"], &sandbox)
         .output()
         .expect("run the prime-agent binary");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success(),
-        "the GitHub-releases source refuses the built-in update:\n{stderr}"
+        output.status.success(),
+        "the GitHub-releases source updates through its assets:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        stderr.contains("GitHub releases base"),
-        "the refusal names the source:\n{stderr}"
+    // The child learned the recorded base through the funnel's env steer
+    // (not the script's own default), and the marker survives the publish.
+    assert_eq!(
+        std::fs::read_to_string(share.join(".base-seen")).unwrap(),
+        base,
+        "the recorded base rides the child's env"
     );
-    assert!(
-        stderr.contains("PRIME_AGENT_DOWNLOAD_BASE_URL"),
-        "the refusal carries the override knob:\n{stderr}"
-    );
+    // The recorded base rides the mock server's http address, so the
+    // re-record carries its consent line too (PR 1's http warning contract).
     assert_eq!(
         std::fs::read_to_string(share.join(".prime-agent-install")).unwrap(),
-        marker,
-        "the refused update keeps the previous install's marker byte-identical"
+        format!("install-rust.sh channel stable\nversion 9.9.9\nbase {base}\nallow-http 1\n"),
+        "the official script's V1 write keeps the recorded source"
     );
+    sandbox.assert_session_preserved();
+}
+
+/// A beta-channel install on a GitHub base routes through the rolling
+/// `nightly` release's assets (`download/nightly/install-beta.sh`): the
+/// funnel serves the beta pair the nightly promote renders, and the
+/// script keeps its channel through the funnel's env steer.
+#[test]
+fn a_beta_source_installs_through_the_rolling_nightly_assets() {
+    let sandbox = Sandbox::new();
+    let share = sandbox.prefix.join("share/prime-agent");
+    std::fs::create_dir_all(&share).expect("share dir");
+    let base = format!(
+        "{}/releases",
+        serve_at(
+            "/releases/download/nightly/install-beta.sh",
+            OFFICIAL_STYLE_INSTALLER
+        )
+    );
+    std::fs::write(
+        share.join(".prime-agent-install"),
+        format!("install-rust.sh channel beta\nversion 0.10.3-beta.9\nbase {base}\n"),
+    )
+    .expect("install marker");
+    let output = prime_agent(&["update"], &sandbox)
+        .output()
+        .expect("run the prime-agent binary");
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "the beta install from the GitHub base updates through the nightly route:\n{stderr_text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(share.join(".base-seen")).unwrap(),
+        base,
+        "the recorded base rides the child's env"
+    );
+    // The script's channel default is beta (the rendered pair), and the
+    // funnel's steer keeps it: the publish records the beta channel (the
+    // mock base is http, so the re-record carries its consent line).
+    assert_eq!(
+        std::fs::read_to_string(share.join(".prime-agent-install")).unwrap(),
+        format!("install-rust.sh channel beta\nversion 9.9.9\nbase {base}\nallow-http 1\n"),
+        "the beta channel survives the update"
+    );
+    sandbox.assert_session_preserved();
 }
 
 /// `update --check` follows the recorded GitHub releases source through the

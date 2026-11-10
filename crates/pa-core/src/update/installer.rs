@@ -1,7 +1,9 @@
 //! The installer-takeover update funnel: `prime-agent update` and the TUI's
 //! `/update` download the update channel's installer and run it — the
-//! official domain endpoint for stable, the download base's
-//! `install-beta.sh` for nightly; never a GitHub raw or workflow URL. The
+//! official domain endpoint or the download base's rendered installers,
+//! with a recorded GitHub releases base riding the release-asset routes
+//! (`latest/download/install.sh`, `download/nightly/install-beta.sh`);
+//! never a GitHub raw or workflow URL. The
 //! script is the single source of truth for the whole move — it resolves
 //! and downloads the latest build, uninstalls the TypeScript version,
 //! publishes the payload, and never touches `~/.prime/agent` (the sessions
@@ -39,6 +41,10 @@ pub const DEFAULT_DOWNLOAD_BASE_URL: &str = "https://pub-728493de92a943e2a9b2d17
 /// source; never a GitHub raw or workflow URL (the override env var stays
 /// for tests and pinned installs).
 pub const OFFICIAL_INSTALLER_URL: &str = "https://app.primeintellect.ai/prime-agent/install.sh";
+/// The stable installer's file under the download base (the R2 layout's
+/// served name; a GitHub releases base serves it at the `latest/download/`
+/// redirect).
+pub const STABLE_INSTALLER_FILE: &str = "install.sh";
 /// The nightly installer's file under the download base (the domain only
 /// forwards `install.sh`, so nightly updates fetch it from the base).
 pub const BETA_INSTALLER_FILE: &str = "install-beta.sh";
@@ -75,13 +81,35 @@ pub fn installer_script_url(channel: Option<&str>) -> String {
             return url;
         }
     }
-    match channel {
-        Some("beta") => format!(
+    match installer_script_route(channel) {
+        Some(url) => url,
+        None if channel == Some("beta") => format!(
             "{}/{BETA_INSTALLER_FILE}",
             download_base_url().trim_end_matches('/')
         ),
-        _ => OFFICIAL_INSTALLER_URL.to_string(),
+        None => OFFICIAL_INSTALLER_URL.to_string(),
     }
+}
+
+/// The recorded download base's script route, when the base carries one:
+/// a GitHub releases base serves the installers as release assets (the
+/// `latest/download/` redirect for stable, the rolling `nightly` release
+/// for beta — the same file names the R2 layout publishes), so an update
+/// installs from its recorded source instead of silently switching back
+/// to the official domain. Every other base keeps the official logic: the
+/// official stable script (the base answers it through the child's env
+/// steer) and the nightly file under the base.
+#[must_use]
+fn installer_script_route(channel: Option<&str>) -> Option<String> {
+    let base = download_base_url();
+    if !super::release::is_github_releases_base(&base) {
+        return None;
+    }
+    let base = base.trim_end_matches('/');
+    Some(match channel {
+        Some("beta") => format!("{base}/download/nightly/{BETA_INSTALLER_FILE}"),
+        _ => format!("{base}/latest/download/{STABLE_INSTALLER_FILE}"),
+    })
 }
 
 /// The download base `--check` reads the channel manifest from: the
@@ -299,20 +327,6 @@ pub async fn run_installer(
 ) -> std::result::Result<Installed, UpdateFailure> {
     let prefix = install_prefix();
     let channel = channel.or_else(|| installed_channel(&prefix));
-    // The refusal gate's override state: an explicit download-base override
-    // OR an explicit installer-script pin means the caller chose this
-    // update's source themselves — a pinned fork script can well install
-    // from a GitHub releases base, so it is never refused.
-    let caller_pinned = BaseOverride::from_env() == BaseOverride::Explicit
-        || std::env::var(ENV_INSTALLER_URL).is_ok_and(|value| !value.trim().is_empty());
-    let base_override = if caller_pinned {
-        BaseOverride::Explicit
-    } else {
-        BaseOverride::Inherited
-    };
-    if let Some(message) = github_releases_refusal(&prefix, base_override) {
-        return Err(UpdateFailure { message });
-    }
     // The base this run installs from, remembered across the script's
     // publish: the official stable script's v1 marker would otherwise
     // erase it (see [`re_record_base`]).
@@ -365,25 +379,6 @@ fn re_record_base(prefix: &Path, base: &str) {
     let _ = std::fs::write(&path, marker);
 }
 
-/// The recorded install source's gate: a GitHub releases base has no
-/// fixed-route installer script, so the script this funnel fetches cannot
-/// install from it (the release-asset route lands with the script-asset
-/// publish). The refusal carries the way out instead of silently
-/// switching the update onto the official bucket. An explicit env
-/// override is the user's own choice and never refused.
-fn github_releases_refusal(prefix: &Path, base_override: BaseOverride) -> Option<String> {
-    let base = installed_base(prefix)?;
-    (base_override == BaseOverride::Inherited && super::release::is_github_releases_base(&base))
-        .then(|| {
-            format!(
-                "the recorded install source is a GitHub releases base ({base}); \
-             the built-in update cannot install from there yet — rerun the \
-             installer from that source, or set \
-             {ENV_DOWNLOAD_BASE_URL} to override"
-            )
-        })
-}
-
 /// Run the takeover update from one explicit script URL and install
 /// prefix: platform preflight, fetch the branch's installer script, and
 /// exec it with the environment passed through (the installer's own
@@ -405,8 +400,21 @@ pub async fn run_installer_from(
     current_target().map_err(|error| UpdateFailure {
         message: format!("{error:#}"),
     })?;
-    let (script, handle) = fetch_script(url).await.map_err(|error| UpdateFailure {
-        message: format!("could not download the installer from {url}: {error:#}"),
+    let (script, handle) = fetch_script(url).await.map_err(|error| {
+        let mut failure = UpdateFailure {
+            message: format!("could not download the installer from {url}: {error:#}"),
+        };
+        // A release-asset route serves the installer the release pipeline
+        // renders: stable rides the `latest/download/` redirect, beta the
+        // rolling `nightly` release — route misses carry the rerun source
+        // and the override knob the old refusal gate named (the beta route
+        // 404s until the first nightly release exists).
+        if url.contains("/latest/download/") || url.contains("/download/nightly/") {
+            failure.message.push_str(
+                "; the recorded release base serves the rendered installer pair itself (stable at the release's `latest/download/` assets, beta at the rolling `nightly` release) — rerun the installer from that source, or set PRIME_AGENT_DOWNLOAD_BASE_URL to override",
+            );
+        }
+        failure
     })?;
     let result = execute_script(&handle, &[], prefix, channel, output).await;
     let _ = std::fs::remove_file(&script);
@@ -844,8 +852,9 @@ fn installer_child(
     }
     // The same stickiness for the download base: when the caller's shell
     // did not choose one, the script installs from the source the install
-    // marker records (the /releases bases are refused before the script
-    // runs, so every base reaching here is one the script can serve).
+    // marker records (every base is servable: the GitHub releases bases
+    // ride the funnel's release-asset script routes, the rest answer the
+    // official or base-rendered scripts the child steers by env).
     if BaseOverride::from_env() == BaseOverride::Inherited {
         if let Some(base) = installed_base(prefix) {
             command.env(ENV_DOWNLOAD_BASE_URL, base);
@@ -1460,6 +1469,29 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             None,
             "an overridden base is inherited, never re-pinned from the marker"
         );
+        // A recorded GitHub releases base serves the installer script from
+        // its release assets: the `latest/download/` redirect for stable,
+        // the rolling `nightly` release for beta — the funnel installs
+        // from the recorded source, never silently back to the official
+        // domain (issue #17's PR-2).
+        std::env::remove_var(ENV_DOWNLOAD_BASE_URL);
+        std::fs::write(
+            share.join(".prime-agent-install"),
+            "install-rust.sh channel stable\nversion 0.10.3\nbase https://github.com/jinnnyang/prime-agent/releases\n",
+        )
+        .unwrap();
+        assert_eq!(
+            installer_script_url(Some("stable")),
+            "https://github.com/jinnnyang/prime-agent/releases/latest/download/install.sh"
+        );
+        assert_eq!(
+            installer_script_url(Some("beta")),
+            "https://github.com/jinnnyang/prime-agent/releases/download/nightly/install-beta.sh"
+        );
+        // An explicit installer pin still wins over the recorded base's
+        // routes (the pinned URL is what runs).
+        std::env::set_var(ENV_INSTALLER_URL, "http://127.0.0.1:9/pinned.sh");
+        assert_eq!(installer_script_url(None), "http://127.0.0.1:9/pinned.sh");
         drop(root);
         for (name, prior) in [
             (ENV_INSTALLER_URL, prior_override),
@@ -1519,43 +1551,6 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             running_commit("2.31.4"),
             None,
             "the TypeScript product's version never reads as a rust commit"
-        );
-    }
-
-    /// A GitHub releases base (no fixed-route installer script) refuses the
-    /// funnel with the way out instead of silently switching sources; an
-    /// explicit override is the user's own choice and never refused, and a
-    /// non-releases base proceeds.
-    #[test]
-    fn a_github_releases_base_refuses_the_funnel_with_the_way_out() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let prefix = dir.path().join("prefix");
-        let share = prefix.join("share/prime-agent");
-        std::fs::create_dir_all(&share).unwrap();
-        let write = |text: &str| std::fs::write(share.join(".prime-agent-install"), text).unwrap();
-        write(
-            "install-rust.sh channel stable\nversion 0.10.3\nbase https://github.com/jinnnyang/prime-agent/releases\n",
-        );
-        let refusal = github_releases_refusal(&prefix, BaseOverride::Inherited)
-            .expect("the GitHub base refuses");
-        assert!(
-            refusal.contains("GitHub releases base"),
-            "the refusal names the source: {refusal}"
-        );
-        assert!(
-            refusal.contains(ENV_DOWNLOAD_BASE_URL),
-            "the refusal carries the override knob"
-        );
-        assert_eq!(
-            github_releases_refusal(&prefix, BaseOverride::Explicit),
-            None,
-            "an explicit override is the user's own choice"
-        );
-        write("install-rust.sh channel stable\nversion 0.10.3\nbase https://mirror.example/dl\n");
-        assert_eq!(
-            github_releases_refusal(&prefix, BaseOverride::Inherited),
-            None,
-            "an R2-style base proceeds"
         );
     }
 

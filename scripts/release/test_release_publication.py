@@ -130,6 +130,11 @@ class PublicationTests(unittest.TestCase):
                 if a[:2] in (['release', 'upload'], ['release', 'create'])] if calls.exists() else []
 
     def refresh(self, **env):
+        # The rolling nightly's installer pair: the promote render deposits
+        # it beside beta.json before the refresh runs (the promote job's
+        # step order), so the refresh-stage fixtures mirror it.
+        (self.out / 'install-beta.sh').write_text('install beta')
+        (self.out / 'install-beta.ps1').write_text('install beta')
         return self.run_step('Refresh the rolling nightly release', **env)
 
     def test_existing_release_preserves_complete_payload_and_checksums(self):

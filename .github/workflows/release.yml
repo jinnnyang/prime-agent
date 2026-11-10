@@ -963,8 +963,19 @@ jobs:
       #     skips the beta channel pointers (beta.json/beta/install-beta.sh),
       #     so the channel only ever advances forward.
       #   - AUDIT SURFACE: beta archives retain every release asset on R2;
-      #     stable releases and the rolling nightly attach them on GitHub.
+      #     stable releases and the rolling nightly attach them on GitHub
+      #     (the tarballs, sums, manifests, and — since the recorded-base
+      #     updates — the rendered installer pairs, the release-asset
+      #     routes the update funnel reads).
+      #   - NO R2 CONFIGURED: a branch without vars.R2_PUBLIC_BASE_URL (a
+      #     fork distributing through GitHub releases only) skips the R2
+      #     publish entirely — the GitHub attach and the rolling nightly
+      #     below carry the release alone. The empty-var case is the ONLY
+      #     skip: a repo that configured the base but not its secrets still
+      #     fails here loudly (the test -n chain and the aws calls never
+      #     silently half-run a configured publish).
       - name: Publish the R2 channel (the channel serves no GitHub URL)
+        if: ${{ vars.R2_PUBLIC_BASE_URL != '' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -1204,6 +1215,51 @@ jobs:
               echo "stable channel advanced to ${RELEASE_VERSION} at ${INSTALL_BASE_URL}"
             fi
           fi
+      # The GitHub-distribution render: the same installer pairs the R2
+      # layout serves, stamped with this repo's release-asset base (the
+      # routes the scripts' own GitHub adaptation and pa-core's update
+      # funnel read: `latest/download/install.sh` for stable, the rolling
+      # `nightly` release's `install-beta.sh` for beta). This runs on both
+      # routes and without the R2 gate: the GitHub attach below carries
+      # the rendered stable pair, and the nightly-refresh payload carries
+      # the rendered beta pair. Both pairs render on EVERY route (each
+      # route's consumer takes its pair, the other is dropped) — the
+      # single unconditional render step is the structural test's
+      # assumption; do not split it per channel.
+      - name: Render the GitHub-attached installers (the release-asset routes)
+        run: |
+          set -euo pipefail
+          GITHUB_INSTALL_BASE="https://github.com/${GITHUB_REPOSITORY}/releases"
+          # The scratch dirs are job-workspace-relative (untracked, gone by
+          # the run's end) so the consumers reference plain relative paths.
+          mkdir -p github-install-stable github-install-beta
+          render_github_installer() {
+            channel="$1"; file="$2"
+            sed -e "s|^DOWNLOAD_BASE_URL_DEFAULT=.*|DOWNLOAD_BASE_URL_DEFAULT=\"${GITHUB_INSTALL_BASE}\"|" \
+                -e "s|^RELEASE_CHANNEL_DEFAULT=.*|RELEASE_CHANNEL_DEFAULT=${channel}|" \
+                "verification-source/install-rust.sh" > "github-install-${channel}/${file}"
+            grep -q "^DOWNLOAD_BASE_URL_DEFAULT=\"${GITHUB_INSTALL_BASE}\"" "github-install-${channel}/${file}"
+            grep -q "^RELEASE_CHANNEL_DEFAULT=${channel}$" "github-install-${channel}/${file}"
+          }
+          render_github_installer_ps1() {
+            channel="$1"; file="$2"
+            sed -e "s|^\$DownloadBaseUrlDefault = '.*'|\$DownloadBaseUrlDefault = '${GITHUB_INSTALL_BASE}'|" \
+                -e "s|^\$ReleaseChannelDefault = '.*'|\$ReleaseChannelDefault = '${channel}'|" \
+                "verification-source/install.ps1" > "github-install-${channel}/${file}"
+            grep -qF "\$DownloadBaseUrlDefault = '${GITHUB_INSTALL_BASE}'" "github-install-${channel}/${file}"
+            grep -qF "\$ReleaseChannelDefault = '${channel}'" "github-install-${channel}/${file}"
+          }
+          render_github_installer stable install.sh
+          render_github_installer_ps1 stable install.ps1
+          render_github_installer beta install-beta.sh
+          render_github_installer_ps1 beta install-beta.ps1
+          # The beta pair rides the nightly-refresh payload inside
+          # release-out (the payload artifact keeps the flat layout the
+          # merge step produced; the rolling release attach lists them by
+          # name).
+          cp github-install-beta/install-beta.sh release-out/
+          cp github-install-beta/install-beta.ps1 release-out/
+
       # [reserved] Apple notarization step goes here once certificates land:
       # sign + notarize each darwin tarball's inner binary before attach.
       - name: Attest build provenance (SLSA)
@@ -1227,6 +1283,8 @@ jobs:
             release-out/*.debug.gz
             release-out/SHA256SUMS
             release-out/*.json
+            github-install-stable/install.sh
+            github-install-stable/install.ps1
       - name: Upload the nightly refresh payload (the rolling release step consumes it)
         if: contains(github.ref_name, '-')
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -1238,6 +1296,8 @@ jobs:
             release-out/*.debug.gz
             release-out/SHA256SUMS
             release-out/*.json
+            release-out/install-beta.sh
+            release-out/install-beta.ps1
           if-no-files-found: error
 
   # The rolling `nightly` release is the nightly channel's discoverable base:
@@ -1387,6 +1447,8 @@ jobs:
               release-out/*.debug.gz \
               release-out/SHA256SUMS \
               release-out/*.json \
+              release-out/install-beta.sh \
+              release-out/install-beta.ps1 \
               --clobber
           else
             if gh api --include "repos/${GH_REPO}/releases/tags/nightly" > "$state/response"; then
@@ -1406,7 +1468,9 @@ jobs:
               release-out/prime-agent-*.tgz \
               release-out/*.debug.gz \
               release-out/SHA256SUMS \
-              release-out/*.json
+              release-out/*.json \
+              release-out/install-beta.sh \
+              release-out/install-beta.ps1
           fi
           # Publish first: a failed or partial asset upload must not advance
           # the source tag. This stays inside the serialized newest-wins guard.

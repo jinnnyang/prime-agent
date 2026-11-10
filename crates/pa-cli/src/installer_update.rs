@@ -1,8 +1,8 @@
 //! The `prime-agent update` body: the TS->Rust migration path. One step —
 //! the update fetches the update channel's installer (stable: the official
-//! domain's `https://app.primeintellect.ai/prime-agent/install.sh`;
-//! nightly: the download base's `install-beta.sh`; never a GitHub raw or
-//! workflow URL) and runs it; the script uninstalls the
+//! domain's `install.sh`, or a recorded GitHub base's release-asset
+//! routes; nightly: the download base's `install-beta.sh`; never a
+//! GitHub raw or workflow URL) and runs it; the script uninstalls the
 //! TypeScript version, installs the latest Rust build of the update
 //! channel, and never touches `~/.prime/agent` (the sessions and
 //! configuration). The TUI's `/update` runs the same core out-of-band
@@ -160,8 +160,8 @@ pub fn run(options: &UpdateOptions) -> i32 {
     let channel = requested_installer_channel(options.channel);
     // The adoption record for source stickiness: which base this update
     // follows and of what kind — never the URL itself. Recorded before
-    // the funnel so a refused or failed update still counts the
-    // resolution; recording never gates the update.
+    // the funnel so a failed update still counts the resolution;
+    // recording never gates the update.
     let source = installer::download_base_source();
     let base = installer::download_base_url();
     record_lifecycle_event(|client| {
