@@ -17,8 +17,8 @@ Every contributor (human or agent) must read this before working on this repo.
   one identity: the ambient git config's. Fabricated or hand-written trailers (including
   noreply forms) misattribute commits to unrelated GitHub accounts.
 - The repo is PrimeIntellect-ai/prime-agent; the Rust implementation lives on the `main` branch.
-- PRs go to the org repo with base `main`:
-  `gh pr create --repo PrimeIntellect-ai/prime-agent --base main`.
+- PRs go to the fork `jinnnyang/prime-agent` with base `main`:
+  `gh pr create --repo jinnnyang/prime-agent --base main`.
 - CI runs on the org's billing: `.github/workflows/continuous.yml` on `main` pushes and
   `release.yml` on version tags.
 - Parity ground truth is unchanged: a read-only checkout of the TS implementation (this
