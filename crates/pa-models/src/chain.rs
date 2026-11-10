@@ -3,6 +3,7 @@
 //! models, offline or not. Resolution returns fresh snapshots: a
 //! mid-session refresh never retargets the active model.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -169,6 +170,20 @@ impl ModelCatalog {
                 // Prime Inference entries (private/live entries come from
                 // the credentialed snapshot below).
                 let mut models = remote;
+                // A snapshot predating a client release cannot list a provider
+                // the compiled table gained since; append compiled providers
+                // the snapshot does not cover so a new provider is never
+                // invisible to an old snapshot (#12). Covered providers stay
+                // snapshot-authoritative.
+                let covered: HashSet<String> =
+                    models.iter().map(|model| model.provider.clone()).collect();
+                for model in transports::compiled_models() {
+                    if model.provider != "prime-inference"
+                        && !covered.contains(model.provider.as_str())
+                    {
+                        models.push(model.clone());
+                    }
+                }
                 for model in transports::prime_inference_offline_entries() {
                     models.push(model);
                 }
@@ -385,6 +400,56 @@ mod tests {
         let models = catalog.resolve(None);
         assert!(models.iter().any(|m| m.id == "cached-a"));
         assert!(!models.iter().any(|m| m.id == "bundled-a"), "cache wins");
+    }
+
+    #[test]
+    fn disk_snapshot_gains_compiled_providers_it_does_not_cover() {
+        let dir = tempfile::tempdir().unwrap();
+        // A last-good snapshot from before a client release: it lists only
+        // anthropic, so every other compiled provider is uncovered by it.
+        let snapshot = json!({
+            "url": MODEL_CATALOG_URL,
+            "scope": PUBLIC_SCOPE,
+            "fetchedAt": 1,
+            "payload": serde_json::from_str::<serde_json::Value>(&models_json(&["cached-a"]))
+                .unwrap(),
+        });
+        std::fs::write(
+            dir.path().join(PROVIDER_CATALOG_CACHE_FILE),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let catalog = ModelCatalog::with_bundled_dir(Some(dir.path().into()), None);
+        let models = catalog.resolve(None);
+        assert!(
+            models.iter().any(|m| m.id == "cached-a"),
+            "snapshot entries win"
+        );
+        let uncovered: Vec<_> = models
+            .iter()
+            .filter(|m| m.provider != "anthropic" && m.provider != "prime-inference")
+            .collect();
+        let expected: Vec<_> = transports::compiled_models()
+            .iter()
+            .filter(|m| m.provider != "anthropic" && m.provider != "prime-inference")
+            .collect();
+        assert!(
+            !expected.is_empty(),
+            "the compiled table has non-anthropic providers"
+        );
+        assert_eq!(
+            uncovered.len(),
+            expected.len(),
+            "uncovered compiled providers are appended exactly once"
+        );
+        assert!(expected.iter().all(|m| uncovered
+            .iter()
+            .any(|u| u.provider == m.provider && u.id == m.id)));
+        assert_eq!(
+            models.iter().filter(|m| m.provider == "anthropic").count(),
+            1,
+            "covered providers stay snapshot-authoritative"
+        );
     }
 
     #[test]
