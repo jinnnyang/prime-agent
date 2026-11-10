@@ -47,6 +47,9 @@ const VERSION: &str = "0.9.9";
 /// The promote step that validates the archive contract of shipped TS updaters.
 const NATIVE_COMPAT_STEP: &str = "Verify historical native updater compatibility";
 
+/// The promote step that renders the GitHub-attached installer pairs.
+const RENDER_STEP_NAME: &str = "Render the GitHub-attached installers (the release-asset routes)";
+
 /// The current build matrix (release.yml's `build-gnu` + `build-darwin` +
 /// `build-windows` jobs): the five standalone targets. The single-artifact
 /// case stands in for a trimmed matrix; the five-target case is today's
@@ -110,6 +113,14 @@ struct Step {
     with: Option<serde_yaml::Value>,
     #[serde(default)]
     env: Option<serde_yaml::Value>,
+    #[serde(rename = "if", default)]
+    if_expr: Option<String>,
+}
+
+/// A `with:` block as comparable text: the yaml value re-serialized (key
+/// and scalar presence is what the gates match, never their order).
+fn with_text(with: &serde_yaml::Value) -> String {
+    serde_yaml::to_string(with).expect("the with block serializes")
 }
 
 /// The promote job's steps from the committed `.github/workflows/release.yml`.
@@ -1069,4 +1080,148 @@ fn the_channel_manifest_refuses_a_release_missing_the_windows_row() {
         output.contains("the release is missing artifact rows for ['win32-x64']"),
         "the refusal must name the missing win32-x64 row\n{output}"
     );
+}
+
+/// The GitHub-only distribution contract (issue #17's PR-2): the update
+/// funnel reads the installer script from the recorded base's release
+/// assets, so the recorded base (`<repo>/releases`) must serve them — the
+/// R2 publish degrades to a gated option on branches without the bucket
+/// config (the v0.10.3 tag died mid-promote here before, the five build
+/// legs green and no GitHub attach), the stable attach carries the stable
+/// pair at the `latest/download/` routes, and the rolling nightly carries
+/// the beta pair beside the refreshed beta.json.
+#[test]
+fn the_github_distribution_serves_the_installers_the_funnel_reads() {
+    let steps = promote_steps();
+    let publish = &steps[step_position(
+        &steps,
+        "Publish the R2 channel (the channel serves no GitHub URL)",
+    )];
+    assert_eq!(
+        publish.if_expr.as_deref(),
+        Some("${{ vars.R2_PUBLIC_BASE_URL != '' }}"),
+        "the R2 publish only runs where a bucket is configured"
+    );
+    let attach = &steps[step_position(&steps, "Attach to GitHub release")];
+    let attach_files = with_text(
+        attach
+            .with
+            .as_ref()
+            .expect("the attach carries its with block"),
+    );
+    assert!(
+        attach_files.contains("github-install-stable/install.sh"),
+        "the stable attach carries the funnel's stable script route\n{attach_files}"
+    );
+    assert!(
+        attach_files.contains("github-install-stable/install.ps1"),
+        "the stable attach carries the Windows entry point\n{attach_files}"
+    );
+    let payload = &steps[step_position(
+        &steps,
+        "Upload the nightly refresh payload (the rolling release step consumes it)",
+    )];
+    let payload_paths = with_text(
+        payload
+            .with
+            .as_ref()
+            .expect("the payload carries its with block"),
+    );
+    assert!(
+        payload_paths.contains("install-beta.sh") && payload_paths.contains("install-beta.ps1"),
+        "the nightly refresh payload carries the beta installer pair\n{payload_paths}"
+    );
+    let whole = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
+        .expect("read release.yml");
+    for call in [
+        "release-out/install-beta.sh",
+        "release-out/install-beta.ps1",
+    ] {
+        assert!(
+            whole.matches(call).count() >= 2,
+            "the rolling nightly upload and bootstrap both list {call}"
+        );
+    }
+    // The render step runs after the merge (the release-out deposit the
+    // beta pair rides) and before both consumers.
+    let render = step_position(&steps, RENDER_STEP_NAME);
+    assert!(
+        render > step_position(&steps, "Merge per-target manifests + SHA256SUMS"),
+        "the render deposits into the merged release-out"
+    );
+    assert!(
+        render < step_position(&steps, "Attach to GitHub release"),
+        "the render precedes the stable attach"
+    );
+}
+
+/// The render step's stamp contract (the same lines the R2 render's own
+/// greps pin): every rendered copy names this repo's release-asset base
+/// and its channel, and the routes' file names exist. Executed only where
+/// `bash` is the promotion runner's bash: Windows' PATH `bash` resolves to
+/// the WSL shim, whose broken-socket noise and argument mangling are not
+/// this contract (the promote runner is ubuntu; the structural gate above
+/// covers the rest everywhere).
+#[cfg(unix)]
+#[test]
+fn the_github_installer_render_stamps_the_repo_base_per_channel() {
+    let steps = promote_steps();
+    let render = &steps[step_position(&steps, RENDER_STEP_NAME)];
+    let cwd = tempfile::tempdir().expect("scratch dir");
+    fs::create_dir_all(cwd.path().join("verification-source")).expect("verification source");
+    fs::create_dir_all(cwd.path().join("release-out")).expect("release out");
+    fs::copy(
+        repo_root().join("install-rust.sh"),
+        cwd.path().join("verification-source/install-rust.sh"),
+    )
+    .expect("stage the sh installer");
+    fs::copy(
+        repo_root().join("install.ps1"),
+        cwd.path().join("verification-source/install.ps1"),
+    )
+    .expect("stage the ps1 installer");
+    let _ = assert_success(
+        &run_step_with_env(
+            cwd.path(),
+            render,
+            &[("GITHUB_REPOSITORY", "jinnnyang/prime-agent")],
+        ),
+        "render the GitHub-attached installers",
+    );
+    let base = "https://github.com/jinnnyang/prime-agent/releases";
+    let stamps = [
+        ("github-install-stable", "install.sh", "stable"),
+        ("github-install-stable", "install.ps1", "stable"),
+        ("github-install-beta", "install-beta.sh", "beta"),
+        ("github-install-beta", "install-beta.ps1", "beta"),
+    ];
+    for (dir, file, channel) in stamps {
+        let body = fs::read_to_string(cwd.path().join(dir).join(file))
+            .expect("the rendered installer exists at its route name");
+        let sh = std::path::Path::new(file).extension() == Some(std::ffi::OsStr::new("sh"));
+        let base_line = if sh {
+            format!("DOWNLOAD_BASE_URL_DEFAULT=\"{base}\"")
+        } else {
+            format!("$DownloadBaseUrlDefault = '{base}'")
+        };
+        assert!(
+            body.contains(&base_line),
+            "the render stamps the repo's release-asset base into {dir}/{file}"
+        );
+        let channel_line = if sh {
+            format!("RELEASE_CHANNEL_DEFAULT={channel}")
+        } else {
+            format!("$ReleaseChannelDefault = '{channel}'")
+        };
+        assert!(
+            body.contains(&channel_line),
+            "the render stamps the {channel} channel default into {dir}/{file}"
+        );
+        // The beta pair also deposits into the merged release-out (the
+        // nightly-refresh payload ride).
+        if dir == "github-install-beta" {
+            fs::read_to_string(cwd.path().join("release-out").join(file))
+                .expect("the beta copy deposits into release-out");
+        }
+    }
 }

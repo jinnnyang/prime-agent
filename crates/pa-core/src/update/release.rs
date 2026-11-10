@@ -59,7 +59,7 @@ pub fn update_user_agent(version: &str) -> String {
 
 /// Whether a download base is a GitHub releases base (a base ending in
 /// `/releases` — the fork installer's default): one shape, one predicate,
-/// shared by the manifest route, the update refusal, and the base-kind
+/// shared by the manifest route, the installer script route, and the base-kind
 /// report (the same detection the install scripts apply).
 pub(crate) fn is_github_releases_base(base_url: &str) -> bool {
     base_url.trim_end_matches('/').ends_with("/releases")

@@ -1,0 +1,1 @@
+- A GitHub-releases install source now updates in place: the release pipeline attaches the rendered installer pairs (`install.sh`/`install.ps1` on stable releases, `install-beta.sh`/`install-beta.ps1` on the rolling nightly), and the built-in update fetches its installer from that recorded base's release-asset routes instead of refusing or falling back to the official script.
