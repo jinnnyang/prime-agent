@@ -57,6 +57,34 @@ pub fn update_user_agent(version: &str) -> String {
     )
 }
 
+/// Whether a download base is a GitHub releases base (a base ending in
+/// `/releases` — the fork installer's default): one shape, one predicate,
+/// shared by the manifest route, the update refusal, and the base-kind
+/// report (the same detection the install scripts apply).
+pub(crate) fn is_github_releases_base(base_url: &str) -> bool {
+    base_url.trim_end_matches('/').ends_with("/releases")
+}
+
+/// The channel manifest's URL at a download base: the R2-style layout
+/// serves it at `<base>/<latest.json|beta.json>`; a GitHub releases base
+/// has no bare pointer file, so the manifest rides the release-asset
+/// routes: the `latest` redirect for stable, the rolling `nightly` tag
+/// for beta (the same adaptation install-rust.sh applies).
+#[must_use]
+pub fn manifest_url(base_url: &str, channel: UpdateChannel) -> String {
+    let base = base_url.trim_end_matches('/');
+    if is_github_releases_base(base) {
+        match channel {
+            UpdateChannel::Stable => format!("{base}/latest/download/{}", channel.manifest_path()),
+            UpdateChannel::Nightly => {
+                format!("{base}/download/nightly/{}", channel.manifest_path())
+            }
+        }
+    } else {
+        format!("{base}/{}", channel.manifest_path())
+    }
+}
+
 /// Fetch and validate the channel's latest release.
 /// `PI_SKIP_VERSION_CHECK`/`PI_OFFLINE` short-circuit to `None`; a missing or
 /// malformed manifest is `None`, never an error - `Planning` decides skip.
@@ -77,9 +105,8 @@ pub async fn latest_release(
     if std::env::var("PI_SKIP_VERSION_CHECK").is_ok() || std::env::var("PI_OFFLINE").is_ok() {
         return Ok(None);
     }
-    let manifest_path =
-        super::version::resolve_update_channel(current_version, channel).manifest_path();
-    let url = format!("{}/{manifest_path}", base_url.trim_end_matches('/'));
+    let resolved = super::version::resolve_update_channel(current_version, channel);
+    let url = manifest_url(base_url, resolved);
     let response = pa_ai::utils::tls::http_client_builder()
         .build()
         .expect("release client")
@@ -329,5 +356,37 @@ mod tests {
             .await
             .expect("the fetch resolves");
         assert!(release.is_none(), "a failed endpoint is nothing to install");
+    }
+
+    /// The manifest URL adapts to the base's shape: the R2-style layout
+    /// serves the manifest at the root, a GitHub releases base rides the
+    /// release-asset routes (the `latest` redirect for stable, the rolling
+    /// `nightly` tag for beta — the same adaptation install-rust.sh
+    /// applies), and a trailing slash never doubles.
+    #[test]
+    fn the_manifest_url_adapts_the_github_releases_base() {
+        assert_eq!(
+            manifest_url("https://pub.example.com", UpdateChannel::Stable),
+            "https://pub.example.com/latest.json"
+        );
+        assert_eq!(
+            manifest_url("https://pub.example.com/", UpdateChannel::Nightly),
+            "https://pub.example.com/beta.json",
+            "a trailing slash is trimmed, never doubled"
+        );
+        assert_eq!(
+            manifest_url(
+                "https://github.com/jinnnyang/prime-agent/releases",
+                UpdateChannel::Stable
+            ),
+            "https://github.com/jinnnyang/prime-agent/releases/latest/download/latest.json"
+        );
+        assert_eq!(
+            manifest_url(
+                "https://github.com/jinnnyang/prime-agent/releases/",
+                UpdateChannel::Nightly
+            ),
+            "https://github.com/jinnnyang/prime-agent/releases/download/nightly/beta.json"
+        );
     }
 }

@@ -38,6 +38,24 @@ echo "installed: 9.9.9-continuous.0123456789abcdef"
 const FAILING_INSTALLER: &str =
     "#!/bin/sh\necho 'install-rust.sh: the artifact download failed' >&2\nexit 3\n";
 
+/// The official stable script's shape: it installs, writes a V1 marker (no
+/// `base` line — upstream's script has not adopted the marker v2 format),
+/// and records the download-base env it received so the e2e can see the
+/// funnel's pass-through.
+const OFFICIAL_STYLE_INSTALLER: &str = r#"#!/bin/sh
+set -eu
+mkdir -p "${PRIME_AGENT_RUST_PREFIX}/bin" "${PRIME_AGENT_RUST_PREFIX}/share/prime-agent"
+printf '#!/bin/sh
+echo "9.9.9-continuous.0123456789abcdef"
+' > "${PRIME_AGENT_RUST_PREFIX}/bin/prime-agent"
+chmod 0755 "${PRIME_AGENT_RUST_PREFIX}/bin/prime-agent"
+printf 'install-rust.sh channel %s
+version %s
+' "${PRIME_AGENT_RELEASE_CHANNEL:-stable}" "9.9.9" > "${PRIME_AGENT_RUST_PREFIX}/share/prime-agent/.prime-agent-install"
+printf '%s' "${PRIME_AGENT_DOWNLOAD_BASE_URL:-}" > "${PRIME_AGENT_RUST_PREFIX}/share/prime-agent/.base-seen"
+echo "installed: 9.9.9-continuous.0123456789abcdef"
+"#;
+
 /// Serve `body` over one plain HTTP request; return the URL the funnel
 /// fetches.
 fn serve(body: &'static str) -> String {
@@ -224,6 +242,107 @@ fn a_nightly_update_fetches_install_beta_from_the_download_base() {
         "the nightly installer ran:\n{stdout}"
     );
     sandbox.assert_session_preserved();
+}
+
+/// A recorded GitHub releases source refuses the built-in update with the
+/// way out (issue #17's PR-1 boundary): no installer is fetched, the
+/// previous install and its marker are kept, and the refusal names the
+/// source and the override knob.
+#[test]
+fn a_github_releases_source_refuses_the_update_and_keeps_the_install() {
+    let sandbox = Sandbox::new();
+    let share = sandbox.prefix.join("share/prime-agent");
+    std::fs::create_dir_all(&share).expect("share dir");
+    let marker = "install-rust.sh channel stable\nversion 0.10.3\nbase https://github.com/jinnnyang/prime-agent/releases\n";
+    std::fs::write(share.join(".prime-agent-install"), marker).expect("install marker");
+    let output = prime_agent(&["update"], &sandbox)
+        .output()
+        .expect("run the prime-agent binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "the GitHub-releases source refuses the built-in update:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("GitHub releases base"),
+        "the refusal names the source:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("PRIME_AGENT_DOWNLOAD_BASE_URL"),
+        "the refusal carries the override knob:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(share.join(".prime-agent-install")).unwrap(),
+        marker,
+        "the refused update keeps the previous install's marker byte-identical"
+    );
+}
+
+/// `update --check` follows the recorded GitHub releases source through the
+/// release-asset manifest route (`<base>/latest/download/latest.json`) —
+/// the same adaptation the install scripts apply.
+#[test]
+fn the_check_reads_the_manifest_through_the_recorded_github_base() {
+    let sandbox = Sandbox::new();
+    let manifest = r#"{"version":"1.2.3","binaries_v2":[{"platform":"linux-x64","file":"prime-agent-1.2.3-linux-x64.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#;
+    let server = serve_at("/releases/latest/download/latest.json", manifest);
+    let share = sandbox.prefix.join("share/prime-agent");
+    std::fs::create_dir_all(&share).expect("share dir");
+    std::fs::write(
+        share.join(".prime-agent-install"),
+        format!("install-rust.sh channel stable\nversion 0.10.3\nbase {server}/releases\n"),
+    )
+    .expect("install marker");
+    let output = prime_agent(&["update", "--check"], &sandbox)
+        .output()
+        .expect("run the prime-agent binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "the check reads the recorded source:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Latest:   1.2.3"),
+        "the check reports the recorded source's latest:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("{server}/releases/latest/download/latest.json")),
+        "the manifest rides the GitHub release-asset route:\n{stdout}"
+    );
+}
+
+/// A mirror-source install keeps its recorded base across an official-script
+/// update: the funnel passes the recorded base to the script it execs, the
+/// official stable script's V1 marker write would erase it, and the
+/// funnel's post-install re-record restores it — the silent-reversion bug
+/// the spec review caught, pinned end to end.
+#[test]
+fn a_mirror_source_survives_an_official_script_update() {
+    let sandbox = Sandbox::new();
+    let share = sandbox.prefix.join("share/prime-agent");
+    std::fs::create_dir_all(&share).expect("share dir");
+    std::fs::write(
+        share.join(".prime-agent-install"),
+        "install-rust.sh channel stable\nversion 0.10.3\nbase https://mirror.example/dl\n",
+    )
+    .expect("install marker");
+    let url = serve(OFFICIAL_STYLE_INSTALLER);
+    let output = run_prime_agent(&["update"], &sandbox, &url);
+    assert!(
+        output.status.success(),
+        "the mirror update succeeds:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(share.join(".base-seen")).unwrap(),
+        "https://mirror.example/dl",
+        "the funnel passes the recorded base to the script it execs"
+    );
+    assert_eq!(
+        std::fs::read_to_string(share.join(".prime-agent-install")).unwrap(),
+        "install-rust.sh channel stable\nversion 9.9.9\nbase https://mirror.example/dl\n",
+        "the official script's V1 write keeps the recorded source: the funnel re-records it"
+    );
 }
 
 /// A failing installer reports the error and keeps the previous install.

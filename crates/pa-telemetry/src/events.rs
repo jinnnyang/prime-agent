@@ -229,6 +229,29 @@ impl UpdateHomebrewRefusal {
     }
 }
 
+/// `update_source_resolved`: the update funnel resolved which download
+/// base it follows. Only the fixed provenance and transport-kind
+/// vocabularies are recorded — never the base URL itself (a base can be
+/// a private mirror).
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateSourceResolved {
+    /// `env` (the explicit override), `marker` (the recorded install
+    /// source), or `default`.
+    pub source: &'static str,
+    /// `github-releases`, `http`, or `https`.
+    pub base_kind: &'static str,
+}
+
+impl UpdateSourceResolved {
+    /// Record this resolution on the shared lifecycle telemetry client.
+    pub fn track(&self, client: &TelemetryClient) {
+        let mut properties = Properties::new();
+        properties.set("source", Value::from(self.source));
+        properties.set("base_kind", Value::from(self.base_kind));
+        client.track("update_source_resolved", properties);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
