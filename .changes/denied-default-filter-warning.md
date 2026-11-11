@@ -1,0 +1,1 @@
+- A startup fallback away from the configured default model now names the modelCatalog filter that hid it, instead of a vague unavailability, in both the interactive session warning and the headless error.

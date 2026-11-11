@@ -228,3 +228,41 @@ async fn print_model_provider_only_settings_default_does_not_scope() {
         ("my-gateway", "my-group/my-model")
     );
 }
+
+#[tokio::test]
+async fn print_model_a_filter_hidden_saved_default_names_the_pattern() {
+    // A built-in provider: custom models.json providers bypass the
+    // modelCatalog filter, so only a catalog entry can be filter-hidden.
+    let (_dir, config, mut registry) = fixture(&json!({
+        "defaultProvider": "anthropic",
+        "defaultModel": "claude-fable-5",
+        "modelCatalog": { "deny": ["anthropic/*"] }
+    }));
+    let error = select_model(&mut registry, &config, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "Configured default model \"claude-fable-5\" is hidden by modelCatalog filter \"anthropic/*\". Review modelCatalog.allow/deny in settings.json."
+    );
+}
+
+#[tokio::test]
+async fn print_model_a_scoped_miss_with_nested_id_keeps_the_generic_error() {
+    // The allow list keeps every my-gateway model, so the miss is a typo, not
+    // a filter hit: the scoped lookup must key the filter on
+    // (my-gateway, my-group/typo-model) and never re-split the nested id into
+    // a fake "my-group" provider that the allow list would hide.
+    let (_dir, config, mut registry) = fixture(&json!({
+        "defaultProvider": "my-gateway",
+        "defaultModel": "my-group/typo-model",
+        "modelCatalog": { "allow": ["my-gateway/*"] }
+    }));
+    let error = select_model(&mut registry, &config, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "Configured default model \"my-group/typo-model\" is unavailable. Check settings.json, models.json, and provider authentication."
+    );
+}

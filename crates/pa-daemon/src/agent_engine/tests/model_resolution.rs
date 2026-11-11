@@ -534,6 +534,54 @@ async fn fresh_session_without_a_saved_model_keeps_the_startup_chain() {
 }
 
 #[tokio::test]
+async fn a_filtered_default_names_the_modelcatalog_pattern_in_the_fallback() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    write_prime_auth(&agent_dir);
+    let server = MockCatalogServer::start(Vec::new()).await;
+    install_loopback_catalog(&agent_dir, &server);
+    // Deny the whole default provider: no same-provider model survives the
+    // filter, so the saved default's template rebuild fails and the chain
+    // falls back to another provider (a single-model deny would be defeated
+    // by the template rebuild on purpose — the selection path is unaffected).
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        json!({
+            "defaultProvider": "anthropic",
+            "defaultModel": "claude-sonnet-4-5",
+            "modelCatalog": { "deny": ["anthropic/*"] }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut session =
+        crate::session_store::SessionFile::create(dir.path().to_str().unwrap_or("/tmp"), None, 0);
+    let path = dir.path().join(crate::session_store::session_file_name(
+        session.session_id(),
+    ));
+    session.set_path(path.clone());
+    session.rewrite().unwrap();
+    let engine = restore_test_engine(dir.path(), None, None);
+    engine.set_session_file(path.clone());
+
+    engine.restore_session_model(&path, None).await;
+    let resolved = engine.resolve_registry_model().expect("startup chain");
+    assert_eq!(
+        resolved.provider, "prime-inference",
+        "the chain fell back past the denied provider"
+    );
+    let message = engine
+        .model_fallback_message()
+        .expect("the denied default warns");
+    assert!(
+        message.starts_with(
+            "Default model anthropic/claude-sonnet-4-5 is hidden by modelCatalog filter \"anthropic/*\". Using prime-inference/"
+        ),
+        "the fallback names the user's own filter, not a vague unavailability: {message}"
+    );
+}
+
+#[tokio::test]
 async fn a_restore_decision_is_scoped_to_its_session_file() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
