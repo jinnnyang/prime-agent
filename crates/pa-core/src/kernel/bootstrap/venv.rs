@@ -21,6 +21,7 @@ mod layout;
 mod probe;
 mod runtime_source;
 mod skills;
+mod store;
 mod uv;
 mod version;
 
@@ -46,6 +47,10 @@ use skills::{
     file_content_hash, read_python_skill_dependency_names, read_python_skill_project_name,
 };
 pub(crate) use skills::{normalize_python_skills, BootstrapPythonSkill};
+pub(crate) use store::mark_kernel_running;
+pub(super) use store::{
+    reclaim_stale_stores, store_dir_name, swap_active_store, versions_dir, STORE_RECLAIM_MIN_AGE,
+};
 pub(crate) use uv::ensure_uv;
 #[cfg(test)]
 use uv::windows_executable_candidates;

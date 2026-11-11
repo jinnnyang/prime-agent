@@ -19,6 +19,7 @@ pub use runtime_code::{
     build_rlm_bootstrap_code, parse_unavailable_python_skills, UnavailablePythonSkills,
     PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER,
 };
+pub(crate) use venv::mark_kernel_running;
 use venv::{
     bootstrap_venv, ensure_uv, expand_home, has_prime_agent_runtime,
     missing_python_skill_import_labels, missing_rlm_extra_import_labels, normalize_python_skills,
@@ -282,15 +283,20 @@ async fn ensure_kernel_venv(
             .await?;
             return Ok(python);
         }
-        let had_venv = venv.exists();
         options.report("› setting up python kernel (one-time, ~30s)…");
-        if had_venv {
-            options.report("rebuilding kernel venv");
-            std::fs::remove_dir_all(&venv)
-                .with_context(|| format!("removing {}", venv.display()))?;
-        }
+        venv::reclaim_stale_stores(&venv, venv::STORE_RECLAIM_MIN_AGE, &|message| {
+            options.report(message);
+        });
+        // Build the new store aside and swap the venv link into place: a
+        // running interpreter keeps executing from the store it opened, and
+        // an interrupted build never destroys the previous venv.
+        let versions = venv::versions_dir(&venv);
+        let store_name = venv::store_dir_name(&runtime_identity);
+        let store = versions.join(&store_name);
+        let building = versions.join(format!("{store_name}.building-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&building);
         bootstrap_venv(
-            &venv,
+            &building,
             &source_dir,
             &runtime_identity,
             python_skills,
@@ -298,6 +304,12 @@ async fn ensure_kernel_venv(
             project,
         )
         .await?;
+        // Publish the built store under its final name, then point the venv
+        // path at it; swapping to the unbuilt name would strand the link on a
+        // missing directory.
+        std::fs::rename(&building, &store)
+            .with_context(|| format!("publishing {}", store.display()))?;
+        venv::swap_active_store(&venv, &store)?;
         Ok(python)
     }
     .await;

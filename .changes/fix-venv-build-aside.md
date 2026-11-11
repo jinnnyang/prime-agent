@@ -1,0 +1,1 @@
+- A kernel venv rebuild no longer deletes a venv a running kernel executes from: the new runtime builds into a versioned store and the venv path swaps over, so parallel sessions and daemon subagents start even while a runtime upgrade is pending, and an interrupted rebuild never leaves a half-wiped venv behind (Windows os error 5 crash loop).
