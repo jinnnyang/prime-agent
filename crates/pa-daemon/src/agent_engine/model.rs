@@ -40,7 +40,15 @@ impl AgentSessionEngine {
         })
         .or_else(|| all.first().cloned());
         if let (Some(model), Some(default)) = (&resolved, &default) {
-            self.record_startup_default_fallback(model, default, &scope, &available, &all);
+            let visibility = settings.get_model_catalog_visibility().unwrap_or_default();
+            self.record_startup_default_fallback(
+                model,
+                default,
+                &scope,
+                &available,
+                &all,
+                &visibility,
+            );
         }
         resolved
     }
@@ -52,6 +60,7 @@ impl AgentSessionEngine {
         scope: &StartupScope,
         available_models: &[Model],
         all_models: &[Model],
+        visibility: &pa_core::models::CatalogVisibility,
     ) {
         let (provider, model_id) = default;
         if scope.is_continuing || (model.provider == *provider && model.id == *model_id) {
@@ -84,10 +93,18 @@ impl AgentSessionEngine {
         if !wanted {
             return;
         }
-        let message = format!(
-            "Default model {provider}/{model_id} is not available. Using {}/{}",
-            model.provider, model.id
-        );
+        let message = match visibility.denying_pattern(provider, model_id) {
+            // The user's own modelCatalog filters hid the configured default;
+            // name the pattern so the silent retarget explains itself (#12).
+            Some(pattern) => format!(
+                "Default model {provider}/{model_id} is hidden by modelCatalog filter \"{pattern}\". Using {}/{}",
+                model.provider, model.id
+            ),
+            None => format!(
+                "Default model {provider}/{model_id} is not available. Using {}/{}",
+                model.provider, model.id
+            ),
+        };
         eprintln!("{message}");
         *decision = Some(RestoredSessionModel {
             session_file,

@@ -1161,11 +1161,39 @@ async fn select_model(
         // The lookup is scoped like TS findInitialModel's saved default: the
         // flag, when given, has already matched the saved provider above.
         let scope = flag_provider.or(saved_provider);
-        return available.iter().find(|model| {
-            scope.is_none_or(|provider| model.provider.eq_ignore_ascii_case(provider))
-                && (model.id.eq_ignore_ascii_case(saved_model)
-                    || format!("{}/{}", model.provider, model.id).eq_ignore_ascii_case(saved_model))
-        }).cloned().ok_or_else(|| format!("Configured default model \"{saved_model}\" is unavailable. Check settings.json, models.json, and provider authentication."));
+        let visibility = settings.get_model_catalog_visibility().unwrap_or_default();
+        return available
+            .iter()
+            .find(|model| {
+                scope.is_none_or(|provider| model.provider.eq_ignore_ascii_case(provider))
+                    && (model.id.eq_ignore_ascii_case(saved_model)
+                        || format!("{}/{}", model.provider, model.id)
+                            .eq_ignore_ascii_case(saved_model))
+            })
+            .cloned()
+            .ok_or_else(|| {
+                // A configured default that the user's own modelCatalog filters
+                // hide is a different problem from a typo: name the pattern (#12).
+                // The scoped lookup keys the filter on the structured
+                // (scope, saved) pair — a scoped nested id like
+                // "internal/glm-5.3-fast" must not be re-split into a fake
+                // provider. The slash parse is only for an unscoped
+                // "provider/id" selector, whose provider is still unknown.
+                let pattern = match scope {
+                    Some(provider) => visibility.denying_pattern(provider, saved_model),
+                    None => saved_model
+                        .rsplit_once('/')
+                        .and_then(|(provider, id)| visibility.denying_pattern(provider, id)),
+                };
+                match pattern {
+                    Some(pattern) => format!(
+                        "Configured default model \"{saved_model}\" is hidden by modelCatalog filter \"{pattern}\". Review modelCatalog.allow/deny in settings.json."
+                    ),
+                    None => format!(
+                        "Configured default model \"{saved_model}\" is unavailable. Check settings.json, models.json, and provider authentication."
+                    ),
+                }
+            });
     }
     // A settings defaultProvider without a defaultModel does not scope the
     // no-flag choice (TS reads the two keys together); only the flag does.

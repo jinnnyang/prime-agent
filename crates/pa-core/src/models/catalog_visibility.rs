@@ -55,6 +55,25 @@ impl CatalogVisibility {
         self.deny.iter().map(|p| p.trim()).filter(|p| !p.is_empty())
     }
 
+    /// The pattern that denies one (`provider`, `id`) pair, credited the same
+    /// way [`Self::apply`] credits hidden models: the matching deny pattern,
+    /// else the allow filter. `None` when the filters keep the pair.
+    #[must_use]
+    pub fn denying_pattern(&self, provider: &str, id: &str) -> Option<String> {
+        if self.keeps(provider, id) {
+            return None;
+        }
+        Some(self.deny_credit(provider, id))
+    }
+
+    /// The pattern credited when this pair is hidden: the matching deny
+    /// pattern, else the allow filter.
+    fn deny_credit(&self, provider: &str, id: &str) -> String {
+        self.active_deny()
+            .find(|p| matches(p, provider, id))
+            .map_or_else(|| NOT_IN_ALLOW.to_string(), str::to_string)
+    }
+
     /// The filtered list plus the pattern-level summary (never model-level: the
     /// summary line must not leak selectors beyond "N hidden").
     #[must_use]
@@ -74,12 +93,7 @@ impl CatalogVisibility {
                 kept.push(model);
             } else {
                 hidden += 1;
-                let pattern =
-                    if let Some(hit) = self.active_deny().find(|p| matches(p, provider, id)) {
-                        hit.to_string()
-                    } else {
-                        NOT_IN_ALLOW.to_string()
-                    };
+                let pattern = self.deny_credit(provider, id);
                 *hidden_by_pattern.entry(pattern).or_insert(0) += 1;
             }
         }
@@ -187,6 +201,26 @@ mod tests {
     fn empty_filters_keep_everything() {
         assert!(CatalogVisibility::default().is_empty());
         assert!(keeps(&v(&[], &[]), "databricks", "dbrx-preview"));
+    }
+
+    #[test]
+    fn denying_pattern_credits_the_hit_and_the_allow_filter() {
+        // A deny hit is credited to its pattern.
+        let vis = v(&[], &["databricks/*", "*-preview"]);
+        assert_eq!(
+            vis.denying_pattern("databricks", "dbrx").as_deref(),
+            Some("databricks/*")
+        );
+        // An allow-only hide is credited to the allow filter, not a model leak.
+        let vis = v(&["prime-inference/*"], &[]);
+        assert_eq!(
+            vis.denying_pattern("databricks", "dbrx").as_deref(),
+            Some(NOT_IN_ALLOW)
+        );
+        // A kept pair denies nothing.
+        let vis = v(&[], &["*-preview"]);
+        assert_eq!(vis.denying_pattern("databricks", "dbrx"), None);
+        assert_eq!(CatalogVisibility::default().denying_pattern("a", "b"), None);
     }
 
     #[test]
