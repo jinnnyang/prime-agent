@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 
 use dir_lock::acquire_bootstrap_lock;
 pub use runtime_code::{
@@ -304,6 +304,11 @@ async fn ensure_kernel_venv(
             project,
         )
         .await?;
+        // Publish the built store under its final name, then point the venv
+        // path at it; swapping to the unbuilt name would strand the link on a
+        // missing directory.
+        std::fs::rename(&building, &store)
+            .with_context(|| format!("publishing {}", store.display()))?;
         venv::swap_active_store(&venv, &store)?;
         Ok(python)
     }

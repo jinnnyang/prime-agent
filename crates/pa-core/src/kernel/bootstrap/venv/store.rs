@@ -86,7 +86,15 @@ pub(in crate::kernel::bootstrap) fn swap_active_store(
     // targets; the rename into place runs under the bootstrap lock, so
     // concurrent starters wait out the swap.
     if venv_is_link(venv_base) {
-        std::fs::remove_dir(venv_base)?;
+        // A junction drops with remove_dir; a unix symlink must unlink.
+        #[cfg(windows)]
+        {
+            std::fs::remove_dir(venv_base)?;
+        }
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(venv_base)?;
+        }
     }
     std::fs::rename(&link, venv_base)
         .with_context(|| format!("moving the kernel venv link to {}", venv_base.display()))
