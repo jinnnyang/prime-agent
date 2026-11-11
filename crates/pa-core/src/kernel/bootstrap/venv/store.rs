@@ -9,7 +9,11 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+// `anyhow!` builds the Windows-only junction error; the unix path uses
+// `Context` alone.
+#[cfg(windows)]
+use anyhow::anyhow;
+use anyhow::Context;
 
 use crate::platform::process::pid_exists;
 
