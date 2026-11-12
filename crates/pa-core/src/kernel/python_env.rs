@@ -81,16 +81,19 @@ fn safe_path_with_mode(path: &Path, project: Option<&Path>, allow_ancestor: bool
 }
 
 /// The single global uv install is a trusted executable even when HOME is an
-/// enclosing Git checkout. No other HOME path receives this exception.
+/// enclosing Git checkout. Without a project, nothing project-internal can be
+/// selected, so the pinned path alone decides. A vanished project still keeps
+/// any checkout that encloses its path. No other HOME path receives this
+/// exception.
 pub(crate) fn safe_home_uv(path: &Path, project: Option<&Path>) -> bool {
     safe_home_uv_with_home(path, project, pa_types::platform::home_dir().as_deref())
 }
 
 fn safe_home_uv_with_home(path: &Path, project: Option<&Path>, home: Option<&Path>) -> bool {
-    let (Some(project), Some(home)) = (project, home) else {
+    let Some(home) = home else {
         return false;
     };
-    let (Ok(project), Ok(canonical_home)) = (project.canonicalize(), home.canonicalize()) else {
+    let Ok(canonical_home) = home.canonicalize() else {
         return false;
     };
     let tools = home.join(".local/bin");
@@ -108,6 +111,24 @@ fn safe_home_uv_with_home(path: &Path, project: Option<&Path>, home: Option<&Pat
     {
         return false;
     }
+    // No project means no checkout to sit inside: the pinned path decides.
+    let Some(project) = project else {
+        return true;
+    };
+    let Ok(project) = project.canonicalize() else {
+        // A vanished project holds nothing checked in, but a checkout that
+        // encloses its path still does. Only that boundary applies.
+        let Some(repo) = project
+            .ancestors()
+            .find(|ancestor| ancestor.join(".git").exists())
+        else {
+            return true;
+        };
+        let Ok(repo) = repo.canonicalize() else {
+            return false;
+        };
+        return !path_starts_with(&canonical_uv, &repo);
+    };
     let nearest_checkout = project
         .ancestors()
         .find(|ancestor| ancestor.join(".git").exists());
@@ -456,6 +477,46 @@ mod tests {
         assert!(safe_home_uv_with_home(
             &uv,
             Some(filesystem_root),
+            Some(&home)
+        ));
+    }
+
+    #[test]
+    fn the_home_uv_resolves_without_a_surviving_project() {
+        // No project context (the installer pre-warm can run with no cwd), or
+        // a vanished project with no checkout around it, has nothing checked
+        // in to guard against: the pinned home uv is trusted there.
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let tool_dir = home.join(".local/bin");
+        let uv_name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        let uv = tool_dir.join(uv_name);
+        let untrusted_uv = home.join("tools").join(uv_name);
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::create_dir_all(untrusted_uv.parent().unwrap()).unwrap();
+        std::fs::write(&uv, "uv").unwrap();
+        std::fs::write(&untrusted_uv, "uv").unwrap();
+        assert!(safe_home_uv_with_home(&uv, None, Some(&home)));
+        assert!(!safe_home_uv_with_home(&untrusted_uv, None, Some(&home)));
+        let vanished = root.path().join("vanished-cwd");
+        assert!(safe_home_uv_with_home(&uv, Some(&vanished), Some(&home)));
+    }
+
+    #[test]
+    fn a_vanished_project_keeps_the_checkout_that_encloses_it() {
+        // The directory is gone, but the checkout that enclosed it can still
+        // hold a checked-in uv at HOME/.local/bin.
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let tool_dir = home.join(".local/bin");
+        let uv = tool_dir.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::create_dir(home.join(".git")).unwrap();
+        std::fs::create_dir(home.join("work")).unwrap();
+        std::fs::write(&uv, "uv").unwrap();
+        assert!(!safe_home_uv_with_home(
+            &uv,
+            Some(&home.join("work/vanished")),
             Some(&home)
         ));
     }
