@@ -53,15 +53,12 @@ pub const BETA_INSTALLER_FILE: &str = "install-beta.sh";
 /// stable installer source, rendered to the same places the sh pair is
 /// (the release pipeline renders `install.ps1` and `install-beta.ps1`
 /// beside the sh pair). Windows only: the ps1 leg exists only there.
-#[cfg(windows)]
 pub(crate) const OFFICIAL_PS1_INSTALLER_URL: &str =
     "https://app.primeintellect.ai/prime-agent/install.ps1";
 /// The stable installer's ps1 file under the download base (the same
 /// layout the sh pair rides).
-#[cfg(windows)]
 pub(crate) const STABLE_PS1_INSTALLER_FILE: &str = "install.ps1";
 /// The nightly installer's ps1 file under the download base.
-#[cfg(windows)]
 pub(crate) const BETA_PS1_INSTALLER_FILE: &str = "install-beta.ps1";
 
 /// `install-rust.sh` as this build shipped it. The local operations
@@ -140,8 +137,9 @@ fn installer_script_route(
 /// `PRIME_AGENT_RUST_INSTALLER_URL` override never reaches here: the
 /// interpreter decision refuses the ps1 leg while an override pins the
 /// script file (a pinned sh script under PowerShell would be misparsed,
-/// not refused).
-#[cfg(windows)]
+/// not refused). Ungated so the unix build's match arm stays complete —
+/// the arm is unreachable there (the interpreter decision never answers
+/// the PowerShell leg on unix), but it must compile.
 #[must_use]
 fn installer_ps1_script_url(channel: Option<&str>) -> String {
     match installer_script_route(channel, STABLE_PS1_INSTALLER_FILE, BETA_PS1_INSTALLER_FILE) {
