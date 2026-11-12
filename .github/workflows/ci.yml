@@ -234,6 +234,7 @@ jobs:
           python3 scripts/release/test_release_publication.py
           python3 scripts/release/test_restamp.py
           python3 scripts/release/test_channel_version.py
+          python3 scripts/release/test_release_notes.py
 
   clippy-test:
     name: check + clippy (workspace)

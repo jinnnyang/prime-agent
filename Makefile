@@ -191,6 +191,12 @@ fold-gates:
 restamp-gates:
 	python3 scripts/release/test_restamp.py
 
+# The stable release notes' battery (release.yml's attach step): the
+# CHANGELOG section carve-out is the content contract, and the fail-closed
+# rule is first - an empty release body must never regress.
+notes-gates:
+	python3 scripts/release/test_release_notes.py
+
 # The CI shard tooling's contract battery (ci.yml's PR smoke): the stable
 # crc32 assignment under the narrowed selection, the scope-aware summary
 # audit, the selection resolver the conditional bins build reads, and the
@@ -199,7 +205,7 @@ shard-gates:
 	python3 scripts/test_ci_test_shard.py
 	python3 scripts/test_ci_pr_crates.py
 
-.PHONY: check deny windows-cross actionlint glibc-gate release-dry-run continuous-dry-run audit-build package catalog-assets catalog-assets-fixture catalog-assets-gates fold-gates restamp-gates shard-gates perf
+.PHONY: check deny windows-cross actionlint glibc-gate release-dry-run continuous-dry-run audit-build package catalog-assets catalog-assets-fixture catalog-assets-gates fold-gates notes-gates restamp-gates shard-gates perf
 
 # Offline packaging contract tests for updaters shipped since Prime Agent 0.6.
 legacy-upgrade-gates:

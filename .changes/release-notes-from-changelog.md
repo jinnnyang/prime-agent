@@ -1,0 +1,1 @@
+- Stable releases now publish their folded CHANGELOG section plus an install/update footer as the release notes, instead of an empty body.
