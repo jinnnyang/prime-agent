@@ -48,19 +48,19 @@ fn safe_path_with_mode(path: &Path, project: Option<&Path>, allow_ancestor: bool
     let Some(project) = project else {
         return false;
     };
-    let Ok(project) = project.canonicalize() else {
-        return false;
-    };
-    let repository_roots: Vec<_> = project
-        .ancestors()
-        .filter(|ancestor| ancestor.join(".git").exists())
-        .collect();
     if !path.is_absolute() {
         return false;
     }
     let Ok(canonical_path) = path.canonicalize() else {
         return false;
     };
+    let Ok(project) = project.canonicalize() else {
+        return permitted_by_vanished_project(path, &canonical_path, project, allow_ancestor);
+    };
+    let repository_roots: Vec<_> = project
+        .ancestors()
+        .filter(|ancestor| ancestor.join(".git").exists())
+        .collect();
     // An unmarked filesystem root is not a repository. Requiring a candidate
     // outside it would reject every installed executable on that volume.
     if repository_roots.is_empty() && project.parent().is_none() {
@@ -71,13 +71,40 @@ fn safe_path_with_mode(path: &Path, project: Option<&Path>, allow_ancestor: bool
     } else {
         repository_roots
     };
-    !boundaries.into_iter().any(|boundary| {
-        if allow_ancestor {
-            path_starts_with(path, boundary) || path_starts_with(&canonical_path, boundary)
-        } else {
-            paths_overlap(path, boundary) || paths_overlap(&canonical_path, boundary)
-        }
-    })
+    !boundaries
+        .into_iter()
+        .any(|boundary| reaches_boundary(path, &canonical_path, boundary, allow_ancestor))
+}
+
+/// A vanished project holds nothing checked in, so only the checkouts that
+/// enclose its path can supply a repository executable.
+fn permitted_by_vanished_project(
+    path: &Path,
+    canonical_path: &Path,
+    vanished_project: &Path,
+    allow_ancestor: bool,
+) -> bool {
+    vanished_project
+        .ancestors()
+        .filter(|ancestor| ancestor.join(".git").exists())
+        .all(|checkout| {
+            checkout.canonicalize().is_ok_and(|checkout| {
+                !reaches_boundary(path, canonical_path, &checkout, allow_ancestor)
+            })
+        })
+}
+
+fn reaches_boundary(
+    path: &Path,
+    canonical_path: &Path,
+    boundary: &Path,
+    allow_ancestor: bool,
+) -> bool {
+    if allow_ancestor {
+        path_starts_with(path, boundary) || path_starts_with(canonical_path, boundary)
+    } else {
+        paths_overlap(path, boundary) || paths_overlap(canonical_path, boundary)
+    }
 }
 
 /// The single global uv install is a trusted executable even when HOME is an
@@ -116,18 +143,7 @@ fn safe_home_uv_with_home(path: &Path, project: Option<&Path>, home: Option<&Pat
         return true;
     };
     let Ok(project) = project.canonicalize() else {
-        // A vanished project holds nothing checked in, but a checkout that
-        // encloses its path still does. Only that boundary applies.
-        let Some(repo) = project
-            .ancestors()
-            .find(|ancestor| ancestor.join(".git").exists())
-        else {
-            return true;
-        };
-        let Ok(repo) = repo.canonicalize() else {
-            return false;
-        };
-        return !path_starts_with(&canonical_uv, &repo);
+        return permitted_by_vanished_project(path, &canonical_uv, project, true);
     };
     let nearest_checkout = project
         .ancestors()
@@ -385,6 +401,39 @@ mod tests {
         assert!(
             !marker.exists(),
             "user site ran after sanitizing Python env"
+        );
+    }
+
+    #[test]
+    fn a_vanished_project_rejects_path_entries_inside_its_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let vanished = repo.join("app/gone");
+        let sibling = repo.join("tools");
+        let trusted = root.path().join("trusted");
+        for dir in [repo.join("app"), sibling.clone(), trusted.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        assert!(!safe_executable_path(&sibling, Some(&vanished)));
+        assert!(safe_executable_path(&trusted, Some(&vanished)));
+    }
+
+    #[test]
+    fn a_vanished_project_without_a_checkout_keeps_path_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let vanished = root.path().join("gone");
+        let trusted = root.path().join("trusted");
+        std::fs::create_dir_all(&trusted).unwrap();
+        assert!(safe_executable_path(&trusted, Some(&vanished)));
+        let mut env = HashMap::from([(
+            OsString::from("PATH"),
+            std::env::join_paths([&trusted]).unwrap(),
+        )]);
+        sanitize_uv_path(&mut env, Some(&vanished));
+        assert_eq!(
+            env.get(OsStr::new("PATH")),
+            Some(&trusted.as_os_str().to_os_string())
         );
     }
 
