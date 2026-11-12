@@ -982,14 +982,14 @@ impl InstallerInterpreter {
     /// # Errors
     /// Returns the failure when no trusted sh interpreter exists.
     fn trusted_sh() -> std::result::Result<Self, UpdateFailure> {
+        // The cfg-divergent arms bind a RESULT (never `return Ok(..)`: the
+        // unix build's single arm would trip needless_return and, with the
+        // shared Result signature, unnecessary_wraps).
         #[cfg(not(windows))]
-        {
-            return Ok(Self::Bash(PathBuf::from("/bin/sh")));
-        }
+        let interpreter = Ok(Self::Bash(PathBuf::from("/bin/sh")));
         #[cfg(windows)]
-        {
-            Self::trusted_bash()
-        }
+        let interpreter = Self::trusted_bash();
+        interpreter
     }
 
     /// The trusted interpreter for the NETWORK update: /bin/sh on unix;
@@ -1004,27 +1004,25 @@ impl InstallerInterpreter {
     /// # Errors
     /// Returns the failure when neither leg exists.
     fn trusted() -> std::result::Result<Self, UpdateFailure> {
+        // The same binding pattern [`Self::trusted_sh`] explains. On unix
+        // this is the absolute /bin/sh — never PATH-resolved, so a
+        // poisoned PATH cannot substitute the interpreter that runs the
+        // installer with the inherited credentials.
         #[cfg(not(windows))]
-        {
-            // The absolute /bin/sh — never PATH-resolved, so a poisoned
-            // PATH cannot substitute the interpreter that runs the
-            // installer with the inherited credentials.
-            return Ok(Self::Bash(PathBuf::from("/bin/sh")));
-        }
+        let interpreter = Ok(Self::Bash(PathBuf::from("/bin/sh")));
         #[cfg(windows)]
-        {
-            InterpreterCandidates {
-                bash: crate::platform::shell::default_kernel_bash_shell()
-                    .map(std::path::PathBuf::from)
-                    .as_deref(),
-                installer_url_override: std::env::var(ENV_INSTALLER_URL)
-                    .is_ok_and(|url| !url.trim().is_empty()),
-                windir: std::env::var_os("WINDIR")
-                    .filter(|value| !value.is_empty())
-                    .as_deref(),
-            }
-            .trusted()
+        let interpreter = InterpreterCandidates {
+            bash: crate::platform::shell::default_kernel_bash_shell()
+                .map(std::path::PathBuf::from)
+                .as_deref(),
+            installer_url_override: std::env::var(ENV_INSTALLER_URL)
+                .is_ok_and(|url| !url.trim().is_empty()),
+            windir: std::env::var_os("WINDIR")
+                .filter(|value| !value.is_empty())
+                .as_deref(),
         }
+        .trusted();
+        interpreter
     }
 }
 
