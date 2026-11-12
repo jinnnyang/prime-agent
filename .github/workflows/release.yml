@@ -1273,12 +1273,20 @@ jobs:
             release-out/prime-agent-*.tar.gz
             release-out/prime-agent-*.tgz
             release-out/*.debug.gz
+      - name: Render the release notes (the folded CHANGELOG section + the install footer)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          python3 verification-source/scripts/release/release_notes.py \
+            --version "${GITHUB_REF_NAME#v}" \
+            --changelog verification-source/CHANGELOG.md \
+            > notes.md
       - name: Attach to GitHub release
         if: ${{ !contains(github.ref_name, '-') }}
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          body_path: notes.md
           prerelease: false
           fail_on_unmatched_files: true
           files: |
