@@ -1,1 +1,0 @@
-- Fixed the Windows clipboard copy corrupting non-ASCII text: clip.exe decoded the UTF-8 payload with the system ANSI code page; the payload is now BOM-marked UTF-16LE, independent of the system code page.

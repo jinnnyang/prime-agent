@@ -3,6 +3,19 @@
 Release notes for Prime Agent. Historical TypeScript release notes are
 recorded in the [TypeScript changelog](https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.8/packages/coding-agent/CHANGELOG.md).
 
+## [0.11.0] - 2026-11-12
+
+- Fixed the Windows clipboard copy corrupting non-ASCII text: clip.exe decoded the UTF-8 payload with the system ANSI code page; the payload is now BOM-marked UTF-16LE, independent of the system code page.
+- A stale on-disk model catalog snapshot no longer hides providers the compiled table gained since: uncovered compiled providers are appended at resolve() time.
+- A startup fallback away from the configured default model now names the modelCatalog filter that hid it, instead of a vague unavailability, in both the interactive session warning and the headless error.
+- Directory locks no longer delete a newer lock when two processes reclaim the same stale lock, or when a holder whose lock was reclaimed releases it; oversized lock owner records are no longer read in full.
+- Project settings (`.prime/agent/settings.json`) can no longer link outside the project: such a link is now refused with an error instead of being read and overwritten. Links inside the project keep working, and saves now write to the linked file instead of replacing the link. Project settings files are limited to 4 MiB.
+- A kernel venv rebuild no longer deletes a venv a running kernel executes from: the new runtime builds into a versioned store and the venv path swaps over, so parallel sessions and daemon subagents start even while a runtime upgrade is pending, and an interrupted rebuild never leaves a half-wiped venv behind (Windows os error 5 crash loop).
+- Bumped rustix 1.1.4 -> 1.1.6 so the cargo-deny advisories gate is clean again after RUSTSEC-2026-0486 (informational xattr unsoundness, affected >= 1.0.0, < 1.1.6) landed in the RustSec DB; no other dependency moves.
+- Autonomous-gate workspace snapshots no longer start programs a repository's own git configuration names (fsmonitor hooks, index-write hooks, diff text conversion and external diff programs, including in submodules, and promisor lazy fetches over any transport); submodule edits and commit bumps still count as workspace changes, and `.gitattributes` clean/process filters, including inside submodules, remain a documented limit.
+- The running daemon now serves re-authenticated provider credentials on the live session's next request: a rotated credential (a fresh `/login`) or an expired OAuth token (refreshed in place) is picked up per request, instead of serving the credential captured when the session started until a `/reload` or a daemon restart.
+- Fixed the transcript view following output again after suspending the TUI with Ctrl+Z.
+
 ## [0.10.4] - 2026-11-10
 
 - Factory json output ports now also bind from a bare JSON object that ends the settle answer (a plain-text tail after prose, a fence that lost its markers, a punctuation-dirty tail), instead of failing the settle with "no JSON object containing output" and burning a re-admission.
