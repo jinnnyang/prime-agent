@@ -49,6 +49,21 @@ pub const STABLE_INSTALLER_FILE: &str = "install.sh";
 /// forwards `install.sh`, so nightly updates fetch it from the base).
 pub const BETA_INSTALLER_FILE: &str = "install-beta.sh";
 
+/// The official domain's PowerShell install endpoint — the ps1 route's
+/// stable installer source, rendered to the same places the sh pair is
+/// (the release pipeline renders `install.ps1` and `install-beta.ps1`
+/// beside the sh pair). Windows only: the ps1 leg exists only there.
+#[cfg(windows)]
+pub const OFFICIAL_PS1_INSTALLER_URL: &str =
+    "https://app.primeintellect.ai/prime-agent/install.ps1";
+/// The stable installer's ps1 file under the download base (the same
+/// layout the sh pair rides).
+#[cfg(windows)]
+pub const STABLE_PS1_INSTALLER_FILE: &str = "install.ps1";
+/// The nightly installer's ps1 file under the download base.
+#[cfg(windows)]
+pub const BETA_PS1_INSTALLER_FILE: &str = "install-beta.ps1";
+
 /// `install-rust.sh` as this build shipped it. The local operations
 /// (`prime-agent update --rollback` and `--archive`) run this copy: they
 /// need no network, and the script matches the layout this build was
@@ -81,7 +96,7 @@ pub fn installer_script_url(channel: Option<&str>) -> String {
             return url;
         }
     }
-    match installer_script_route(channel) {
+    match installer_script_route(channel, STABLE_INSTALLER_FILE, BETA_INSTALLER_FILE) {
         Some(url) => url,
         None if channel == Some("beta") => format!(
             "{}/{BETA_INSTALLER_FILE}",
@@ -98,18 +113,45 @@ pub fn installer_script_url(channel: Option<&str>) -> String {
 /// installs from its recorded source instead of silently switching back
 /// to the official domain. Every other base keeps the official logic: the
 /// official stable script (the base answers it through the child's env
-/// steer) and the nightly file under the base.
+/// steer) and the nightly file under the base. `stable_file`/`beta_file`
+/// pick the pair the route spells: the sh pair for the bash legs, the ps1
+/// pair for the Windows PowerShell leg (the release pipeline renders both
+/// pairs to the same places).
 #[must_use]
-fn installer_script_route(channel: Option<&str>) -> Option<String> {
+fn installer_script_route(
+    channel: Option<&str>,
+    stable_file: &str,
+    beta_file: &str,
+) -> Option<String> {
     let base = download_base_url();
     if !super::release::is_github_releases_base(&base) {
         return None;
     }
     let base = base.trim_end_matches('/');
     Some(match channel {
-        Some("beta") => format!("{base}/download/nightly/{BETA_INSTALLER_FILE}"),
-        _ => format!("{base}/latest/download/{STABLE_INSTALLER_FILE}"),
+        Some("beta") => format!("{base}/download/nightly/{beta_file}"),
+        _ => format!("{base}/latest/download/{stable_file}"),
     })
+}
+
+/// The PowerShell leg's installer URL: the sh leg's route table spelled
+/// with the ps1 file names, the same fallback shape (the official domain's
+/// ps1 endpoint for stable, the nightly ps1 file under the base). The
+/// `PRIME_AGENT_RUST_INSTALLER_URL` override never reaches here: the
+/// interpreter decision refuses the ps1 leg while an override pins the
+/// script file (a pinned sh script under PowerShell would be misparsed,
+/// not refused).
+#[cfg(windows)]
+#[must_use]
+fn installer_ps1_script_url(channel: Option<&str>) -> String {
+    match installer_script_route(channel, STABLE_PS1_INSTALLER_FILE, BETA_PS1_INSTALLER_FILE) {
+        Some(url) => url,
+        None if channel == Some("beta") => format!(
+            "{}/{BETA_PS1_INSTALLER_FILE}",
+            download_base_url().trim_end_matches('/')
+        ),
+        None => OFFICIAL_PS1_INSTALLER_URL.to_string(),
+    }
 }
 
 /// The download base `--check` reads the channel manifest from: the
@@ -334,7 +376,18 @@ pub async fn run_installer(
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| installed_base(&prefix));
-    let result = run_installer_from(&installer_script_url(channel), &prefix, channel, output).await;
+    // The interpreter is resolved BEFORE the fetch: the script file the
+    // URL serves must match the interpreter's invocation form (the sh
+    // scripts ride stdin, the ps1 script rides -File). Git Bash keeps the
+    // sh route (an sh-installed machine runs the same script it was
+    // installed with); no trusted Git Bash takes the system PowerShell
+    // and the ps1 route (#41).
+    let interpreter = InstallerInterpreter::trusted()?;
+    let url = match &interpreter {
+        InstallerInterpreter::PowerShell(_) => installer_ps1_script_url(channel),
+        InstallerInterpreter::Bash(_) => installer_script_url(channel),
+    };
+    let result = run_installer_from(&url, &interpreter, &prefix, channel, output).await;
     if result.is_ok() {
         if let Some(base) = &installed_from {
             re_record_base(&prefix, base);
@@ -391,8 +444,9 @@ fn re_record_base(prefix: &Path, base: &str) {
 ///
 /// # Errors
 /// Returns the failure message for every non-installing outcome.
-pub async fn run_installer_from(
+pub(crate) async fn run_installer_from(
     url: &str,
+    interpreter: &InstallerInterpreter,
     prefix: &Path,
     channel: Option<&'static str>,
     output: InstallerOutput,
@@ -400,7 +454,9 @@ pub async fn run_installer_from(
     current_target().map_err(|error| UpdateFailure {
         message: format!("{error:#}"),
     })?;
-    let (script, handle) = fetch_script(url).await.map_err(|error| {
+    let (script, handle) = fetch_script(url, interpreter.script_extension())
+        .await
+        .map_err(|error| {
         let mut failure = UpdateFailure {
             message: format!("could not download the installer from {url}: {error:#}"),
         };
@@ -416,7 +472,7 @@ pub async fn run_installer_from(
         }
         failure
     })?;
-    let result = execute_script(&handle, &[], prefix, channel, output).await;
+    let result = execute_script(&script, &handle, &[], prefix, channel, output, interpreter).await;
     let _ = std::fs::remove_file(&script);
     result?;
     let version = launcher_version(prefix).await;
@@ -441,7 +497,7 @@ pub async fn run_bundled_installer(
     // unix path only ever borrows the handle.
     #[cfg_attr(not(windows), allow(unused_mut))]
     let (script, mut handle) =
-        write_script(BUNDLED_INSTALLER.as_bytes()).map_err(|error| UpdateFailure {
+        write_script(BUNDLED_INSTALLER.as_bytes(), "sh").map_err(|error| UpdateFailure {
             message: format!("could not write the bundled installer: {error:#}"),
         })?;
     #[cfg(windows)]
@@ -486,10 +542,10 @@ pub async fn run_bundled_installer(
                 message: format!("could not run the installer: {error}"),
             }
         })?;
-        let shell = trusted_shell().inspect_err(|_| {
+        let interpreter = InstallerInterpreter::trusted_bash().inspect_err(|_| {
             let _ = std::fs::remove_file(&script);
         })?;
-        let mut command = installer_child(&shell, prefix, None);
+        let mut command = installer_child(&interpreter, prefix, None);
         command
             .arg("-s")
             .arg("--")
@@ -521,7 +577,17 @@ pub async fn run_bundled_installer(
         })?;
         return Ok(Installed { version: None });
     }
-    let result = execute_script(&handle, args, prefix, None, InstallerOutput::Inherit).await;
+    let interpreter = InstallerInterpreter::trusted_bash()?;
+    let result = execute_script(
+        &script,
+        &handle,
+        args,
+        prefix,
+        None,
+        InstallerOutput::Inherit,
+        &interpreter,
+    )
+    .await;
     let _ = std::fs::remove_file(&script);
     result?;
     Ok(Installed {
@@ -597,8 +663,8 @@ async fn local_mode_preflight(
     prefix: &Path,
     args: &[&std::ffi::OsStr],
 ) -> std::result::Result<(), UpdateFailure> {
-    let shell = trusted_shell()?;
-    let mut command = installer_child(&shell, prefix, None);
+    let interpreter = InstallerInterpreter::trusted_bash()?;
+    let mut command = installer_child(&interpreter, prefix, None);
     command
         .arg("-s")
         .arg("--")
@@ -722,7 +788,7 @@ pub fn installed_channel(prefix: &Path) -> Option<&'static str> {
 /// # Errors
 /// Returns an error when the request fails, answers a non-success status,
 /// or the body cannot be read or written.
-async fn fetch_script(url: &str) -> Result<(PathBuf, std::fs::File)> {
+async fn fetch_script(url: &str, extension: &str) -> Result<(PathBuf, std::fs::File)> {
     let response = pa_ai::utils::tls::http_client_builder()
         .build()
         .expect("installer client")
@@ -743,7 +809,7 @@ async fn fetch_script(url: &str) -> Result<(PathBuf, std::fs::File)> {
     if bytes.is_empty() {
         anyhow::bail!("the installer script at {url} was empty");
     }
-    write_script(&bytes)
+    write_script(&bytes, extension)
 }
 
 /// Write installer script bytes to a per-run temp file, created fresh
@@ -757,10 +823,11 @@ async fn fetch_script(url: &str) -> Result<(PathBuf, std::fs::File)> {
 /// `curl|sh` one-liner's own invocation form): the bytes that run are
 /// the bytes written here, and the name only serves the post-run
 /// cleanup.
-fn write_script(bytes: &[u8]) -> Result<(PathBuf, std::fs::File)> {
+fn write_script(bytes: &[u8], extension: &str) -> Result<(PathBuf, std::fs::File)> {
     let script = std::env::temp_dir().join(format!(
-        "prime-agent-update-{}.sh",
-        uuid::Uuid::now_v7().simple()
+        "prime-agent-update-{}.{}",
+        uuid::Uuid::now_v7().simple(),
+        extension
     ));
     let mut options = std::fs::OpenOptions::new();
     options.create_new(true).read(true).write(true);
@@ -787,42 +854,182 @@ fn write_script(bytes: &[u8]) -> Result<(PathBuf, std::fs::File)> {
     Ok((script, script_file))
 }
 
-/// The trusted interpreter for the installer child (the `curl|sh`
-/// one-liner's own): the absolute /bin/sh on unix — never PATH-resolved,
-/// so a poisoned `PATH` cannot substitute the interpreter that runs the
-/// installer with the inherited credentials.
-#[cfg(not(windows))]
-fn trusted_shell() -> PathBuf {
-    PathBuf::from("/bin/sh")
+/// The trusted interpreter the funnel's child runs under, resolved before
+/// the fetch: the script file the URL serves must match the interpreter's
+/// invocation form (the sh scripts ride the child's stdin, the ps1 script
+/// rides `-File`).
+#[derive(Debug)]
+pub(crate) enum InstallerInterpreter {
+    /// The interpreter the sh legs run under: the absolute /bin/sh on
+    /// unix (the `curl|sh` one-liner's own), Git Bash at a trusted root
+    /// on Windows (hardcoded install-dir literals, never PATH).
+    Bash(std::path::PathBuf),
+    /// The system Windows PowerShell at its fixed install path: the ps1
+    /// leg's only permitted interpreter — never `pwsh` and never the
+    /// PowerShell 7 install dir (a PATH lookup); System32 is a fixed
+    /// path. Constructed on Windows only; the unix build keeps the
+    /// variant so the child-form match in [`Self::invocation`] stays
+    /// shared.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    PowerShell(std::path::PathBuf),
 }
 
-/// On Windows the kernel shell default's TRUSTED Git Bash roots -
-/// hardcoded install-dir literals, never PATH and never `where bash.exe`
-/// (the `get_shell_config` fallback that serves the kernel shell would
-/// let a repo-controlled `PATH` place the interpreter that receives the
-/// inherited `GITHUB_TOKEN`; the funnel must not use it).
-///
-/// # Errors
-/// Returns the failure when no trusted Git Bash root exists.
+impl InstallerInterpreter {
+    /// The interpreter's program path: the sh legs' `/bin/sh` on unix,
+    /// the resolved executable on Windows.
+    fn program(&self) -> &std::path::Path {
+        match self {
+            Self::Bash(shell) | Self::PowerShell(shell) => shell.as_path(),
+        }
+    }
+
+    /// The script file extension the interpreter's invocation form
+    /// serves: the stdin legs run the sh pair, the PowerShell leg the
+    /// ps1 pair.
+    fn script_extension(&self) -> &'static str {
+        match self {
+            Self::PowerShell(_) => "ps1",
+            Self::Bash(_) => "sh",
+        }
+    }
+
+    /// Complete `command` for this interpreter's invocation form: the
+    /// stdin legs run `-s --` with the script riding the child's stdin
+    /// from the handle [`write_script`] returned; the PowerShell leg
+    /// runs `-File <script>` — the ps1 script's own header pins the file
+    /// invocation as the exit-code-faithful form (`-Command -` reads
+    /// stdin but does not carry `exit N` to the process exit code), and
+    /// the by-name open rides the user-scoped Windows temp directory
+    /// (the same trust domain as this process; the unix shared-temp
+    /// swap hazard does not exist) with an unguessable name.
+    fn invocation(
+        &self,
+        command: &mut tokio::process::Command,
+        script_path: &Path,
+        script: &std::fs::File,
+        args: &[&std::ffi::OsStr],
+    ) -> std::result::Result<(), UpdateFailure> {
+        match self {
+            Self::PowerShell(_) => {
+                command
+                    .arg("-NoProfile")
+                    .arg("-NonInteractive")
+                    .arg("-ExecutionPolicy")
+                    .arg("Bypass")
+                    .arg("-File")
+                    .arg(script_path)
+                    .args(args);
+                Ok(())
+            }
+            Self::Bash(_) => {
+                let stdin = std::process::Stdio::from(script.try_clone().map_err(|error| {
+                    UpdateFailure {
+                        message: format!("could not run the installer: {error}"),
+                    }
+                })?);
+                command.arg("-s").arg("--").args(args).stdin(stdin);
+                Ok(())
+            }
+        }
+    }
+
+    /// The system Windows PowerShell at its fixed install path:
+    /// `%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe` — a
+    /// hardcoded system location satisfying the funnel's never-PATH trust
+    /// rule (the same standard the bash roots and /bin/sh follow).
+    #[cfg(windows)]
+    fn system_power_shell(windir: Option<&std::ffi::OsStr>) -> Option<Self> {
+        let windir = windir?;
+        let powershell = std::path::PathBuf::from(windir)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        powershell.is_file().then_some(Self::PowerShell(powershell))
+    }
+
+    /// The trusted interpreter for the LOCAL modes (`--rollback`,
+    /// `--archive`): the bundled installer is the sh script, and the ps1
+    /// script has no local-mode equivalent (no rollback/archive switches)
+    /// — these modes run under Git Bash or not at all.
+    ///
+    /// # Errors
+    /// Returns the failure when no trusted Git Bash root exists.
+    #[cfg(windows)]
+    fn trusted_bash() -> std::result::Result<Self, UpdateFailure> {
+        crate::platform::shell::default_kernel_bash_shell()
+            .map(|shell| Self::Bash(std::path::PathBuf::from(shell)))
+            .ok_or_else(|| UpdateFailure {
+                // No shellPath guidance here: the funnel, like its unix
+                // side (the hardcoded /bin/sh), resolves only the trusted
+                // roots - the settings key serves the kernel shell, not
+                // this privileged execution (the promise would lie).
+                message: NO_TRUSTED_BASH_MESSAGE.to_string(),
+            })
+    }
+
+    /// The trusted interpreter for the NETWORK update: /bin/sh on unix;
+    /// on Windows Git Bash at a trusted root first (an sh-installed
+    /// machine keeps running the sh script), then the system Windows
+    /// PowerShell and the ps1 route — hardcoded install-dir literals,
+    /// never PATH and never `where bash.exe`/`pwsh` (the
+    /// `get_shell_config` fallback that serves the kernel shell would let
+    /// a repo-controlled `PATH` place the interpreter that receives the
+    /// inherited `GITHUB_TOKEN`; the funnel must not use it).
+    ///
+    /// # Errors
+    /// Returns the failure when neither leg exists.
+    fn trusted() -> std::result::Result<Self, UpdateFailure> {
+        #[cfg(not(windows))]
+        {
+            // The absolute /bin/sh — never PATH-resolved, so a poisoned
+            // PATH cannot substitute the interpreter that runs the
+            // installer with the inherited credentials.
+            return Ok(Self::Bash(PathBuf::from("/bin/sh")));
+        }
+        #[cfg(windows)]
+        {
+            if let Ok(bash) = Self::trusted_bash() {
+                return Ok(bash);
+            }
+            // An installer-URL override pins the script file itself: it
+            // runs under the bash leg or not at all (see
+            // [`installer_ps1_script_url`]).
+            if std::env::var(ENV_INSTALLER_URL).is_ok_and(|url| !url.trim().is_empty()) {
+                return Err(UpdateFailure {
+                    message: NO_TRUSTED_BASH_MESSAGE.to_string(),
+                });
+            }
+            let windir = std::env::var_os("WINDIR").filter(|value| !value.is_empty());
+            Self::system_power_shell(windir.as_deref()).ok_or_else(no_trusted_interpreter_failure)
+        }
+    }
+}
+
+/// The local modes' refusal (the bundled sh installer has no ps1
+/// equivalent): no trusted Git Bash root exists.
 #[cfg(windows)]
-fn trusted_shell() -> std::result::Result<std::path::PathBuf, UpdateFailure> {
-    crate::platform::shell::default_kernel_bash_shell()
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| UpdateFailure {
-            // No shellPath guidance here: the funnel, like its unix side
-            // (the hardcoded /bin/sh), resolves only the trusted roots -
-            // the settings key serves the kernel shell, not this privileged
-            // execution (the promise would lie).
-            message: "could not run the installer: no Git Bash found at \
-                  the trusted install roots \
-                  (C:\\Program Files\\Git\\bin\\bash.exe); install \
-                  Git for Windows (https://git-scm.com/download/win) \
-                  to update from this machine"
-                .to_string(),
-        })
+const NO_TRUSTED_BASH_MESSAGE: &str = "could not run the installer: no Git Bash found at \
+      the trusted install roots \
+      (C:\\Program Files\\Git\\bin\\bash.exe); install \
+      Git for Windows (https://git-scm.com/download/win) \
+      to update from this machine";
+
+/// The network update's refusal: neither the bash leg nor the PowerShell
+/// fallback exists on this machine.
+#[cfg(windows)]
+fn no_trusted_interpreter_failure() -> UpdateFailure {
+    UpdateFailure {
+        message: "could not run the installer: no trusted interpreter found \
+              (Git Bash at C:\\Program Files\\Git\\bin\\bash.exe, Windows \
+              PowerShell at %WINDIR%\\System32\\WindowsPowerShell\\v1.0\\ \
+              powershell.exe); install Git for Windows \
+              (https://git-scm.com/download/win) to update from this machine"
+            .to_string(),
+    }
 }
 
-/// Build the installer's child command: [`trusted_shell`]'s interpreter
+/// Build the installer's child command: the resolved interpreter
 /// with the installer's env knobs (the caller completes it with the
 /// `-s --` form — the `curl|sh` one-liner's own — where the script rides
 /// the child's stdin from the handle [`write_script`] returned and
@@ -832,11 +1039,11 @@ fn trusted_shell() -> std::result::Result<std::path::PathBuf, UpdateFailure> {
 /// own knob, so the script publishes exactly where the probe looks —
 /// every other `PRIME_AGENT_RUST_*` knob passes through untouched.
 fn installer_child(
-    shell: &Path,
+    interpreter: &InstallerInterpreter,
     prefix: &Path,
     channel: Option<&'static str>,
 ) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(shell);
+    let mut command = tokio::process::Command::new(interpreter.program());
     command.env(ENV_PREFIX, prefix);
     // The check knobs are the PRE-FLIGHT's alone: a user shell carrying
     // either would make the real run validate and exit without
@@ -863,34 +1070,30 @@ fn installer_child(
     command
 }
 
-/// Exec the script and wait for it: [`trusted_shell`]'s interpreter
-/// under [`installer_child`]'s env wiring, the `-s --` form with the
-/// script riding the child's stdin from the handle [`write_script`]
-/// returned (the shared temp directory can never swap the bytes under a
-/// name — the handle IS what runs) and `args` as the child's positional
-/// parameters. The script's own
-/// die messages already streamed with [`InstallerOutput::Inherit`];
-/// with [`InstallerOutput::Capture`] the tail becomes the failure
-/// message.
+/// Exec the script and wait for it: `interpreter`'s invocation form
+/// ([`InstallerInterpreter::invocation`]) under [`installer_child`]'s
+/// env wiring and `args` as the child's positional parameters. The
+/// script's own die messages already streamed with
+/// [`InstallerOutput::Inherit`]; with [`InstallerOutput::Capture`] the
+/// tail becomes the failure message.
 ///
 /// # Errors
 /// Returns the failure when the script cannot start or exits nonzero.
 async fn execute_script(
+    script_path: &Path,
     script: &std::fs::File,
     args: &[&std::ffi::OsStr],
     prefix: &Path,
     channel: Option<&'static str>,
     output: InstallerOutput,
+    interpreter: &InstallerInterpreter,
 ) -> std::result::Result<(), UpdateFailure> {
-    #[cfg(windows)]
-    let shell = trusted_shell()?;
-    #[cfg(not(windows))]
-    let shell = trusted_shell();
-    let stdin = std::process::Stdio::from(script.try_clone().map_err(|error| UpdateFailure {
-        message: format!("could not run the installer: {error}"),
-    })?);
-    let mut command = installer_child(&shell, prefix, channel);
-    command.arg("-s").arg("--").args(args).stdin(stdin);
+    let mut command = installer_child(interpreter, prefix, channel);
+    interpreter
+        .invocation(&mut command, script_path, script, args)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(script_path);
+        })?;
     match output {
         InstallerOutput::Inherit => {
             let status = command.status().await.map_err(|error| UpdateFailure {
@@ -913,8 +1116,9 @@ async fn execute_script(
         }
         InstallerOutput::Capture => {
             // The TUI owns the terminal: no controlling tty, and the
-            // child's stdin is the script itself — so the script cannot
-            // open /dev/tty to prompt and never reads a terminal.
+            // stdin legs' child stdin is the script itself — so the
+            // script cannot open /dev/tty to prompt and never reads a
+            // terminal; the PowerShell leg is -NonInteractive on top.
             #[cfg(unix)]
             crate::platform::process::set_new_session(command.as_std_mut());
             let captured = command.output().await.map_err(|error| UpdateFailure {
@@ -1383,8 +1587,17 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
     /// download base itself rides the install marker's recorded `base`
     /// line, with the explicit override as the escape hatch and the
     /// installer child carrying the recorded base to the script it execs.
+    /// The knob probes read process env (the download base, the prefix,
+    /// the override); the tests that touch it serialize on one lock.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn the_update_knobs_follow_the_channel_and_the_recorded_source() {
+        let _env = env_lock();
         // The knobs are SAVED and RESTORED around the probe: the env is
         // process-global, so a pinned value in the surrounding
         // environment must survive it.
@@ -1443,13 +1656,17 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             "without an override the recorded source rides"
         );
         let child_base = || {
-            installer_child(Path::new("/bin/sh"), &prefix, None)
-                .as_std()
-                .get_envs()
-                .find(|(key, _)| *key == ENV_DOWNLOAD_BASE_URL)
-                .and_then(|(_, value)| value)
-                .map(std::ffi::OsStr::to_string_lossy)
-                .map(|value| value.to_string())
+            installer_child(
+                &InstallerInterpreter::Bash(PathBuf::from("/bin/sh")),
+                &prefix,
+                None,
+            )
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == ENV_DOWNLOAD_BASE_URL)
+            .and_then(|(_, value)| value)
+            .map(std::ffi::OsStr::to_string_lossy)
+            .map(|value| value.to_string())
         };
         assert_eq!(
             child_base().as_deref(),
@@ -1503,6 +1720,135 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
                 None => std::env::remove_var(name),
             }
         }
+    }
+
+    /// The PowerShell leg's route table mirrors the sh leg's: the GitHub
+    /// releases bases serve the ps1 pair as release assets at the same
+    /// paths, and every other base keeps the official/beta-file fallback.
+    #[test]
+    #[cfg(windows)]
+    fn the_ps1_route_serves_the_same_paths_as_the_sh_route() {
+        let _env = env_lock();
+        let prior_base = std::env::var_os(ENV_DOWNLOAD_BASE_URL);
+        let prior_prefix = std::env::var_os(ENV_PREFIX);
+        let (root, _preserve, prefix) = sandbox();
+        std::env::set_var(ENV_PREFIX, &prefix);
+        std::env::set_var(
+            ENV_DOWNLOAD_BASE_URL,
+            "https://github.com/jinnnyang/prime-agent/releases",
+        );
+        assert_eq!(
+            installer_ps1_script_url(None),
+            "https://github.com/jinnnyang/prime-agent/releases/latest/download/install.ps1"
+        );
+        assert_eq!(
+            installer_ps1_script_url(Some("beta")),
+            "https://github.com/jinnnyang/prime-agent/releases/download/nightly/install-beta.ps1"
+        );
+        std::env::set_var(ENV_DOWNLOAD_BASE_URL, "https://mirror.example/");
+        assert_eq!(
+            installer_ps1_script_url(Some("beta")),
+            "https://mirror.example/install-beta.ps1"
+        );
+        assert_eq!(installer_ps1_script_url(None), OFFICIAL_PS1_INSTALLER_URL);
+        drop(root);
+        for (name, prior) in [
+            (ENV_DOWNLOAD_BASE_URL, prior_base),
+            (ENV_PREFIX, prior_prefix),
+        ] {
+            match prior {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+
+    /// The system PowerShell leg resolves only at its fixed System32
+    /// path, and only when the file exists there.
+    #[test]
+    #[cfg(windows)]
+    fn the_system_power_shell_resolves_only_at_the_fixed_file() {
+        assert!(InstallerInterpreter::system_power_shell(None).is_none());
+        let root = tempfile::tempdir().expect("windir sandbox");
+        let v1 = root.path().join("System32/WindowsPowerShell/v1.0");
+        std::fs::create_dir_all(&v1).expect("the v1.0 dir");
+        assert!(InstallerInterpreter::system_power_shell(Some(root.path().as_os_str())).is_none());
+        std::fs::write(v1.join("powershell.exe"), b"stub").expect("the exe");
+        match InstallerInterpreter::system_power_shell(Some(root.path().as_os_str())) {
+            Some(InstallerInterpreter::PowerShell(resolved)) => {
+                assert_eq!(
+                    resolved.extension().and_then(|ext| ext.to_str()),
+                    Some("exe")
+                );
+            }
+            other => panic!("the fixed path answers the PowerShell leg: {other:?}"),
+        }
+    }
+
+    /// The PowerShell child runs the FILE form: `-File` with the temp
+    /// script's path, no stdin, the interpreter's program (the fixed
+    /// System32 exe — never a PATH name).
+    #[test]
+    #[cfg(windows)]
+    fn the_power_shell_child_runs_the_file_form() {
+        let program = PathBuf::from("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
+        let interpreter = InstallerInterpreter::PowerShell(program.clone());
+        let script_path = std::env::temp_dir().join("prime-agent-update-test-file-form.ps1");
+        let script = std::fs::File::options()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&script_path)
+            .expect("the temp script");
+        let mut command = installer_child(&interpreter, Path::new("prefix"), None);
+        interpreter
+            .invocation(&mut command, &script_path, &script, &[])
+            .expect("the form applies");
+        let std_command = command.as_std();
+        assert_eq!(std_command.get_program(), program.as_os_str());
+        let args: Vec<_> = std_command
+            .get_args()
+            .map(std::ffi::OsStr::to_string_lossy)
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script_path.to_string_lossy().as_ref(),
+            ],
+            "the ps1 leg runs the file form with no stdin"
+        );
+        let _ = std::fs::remove_file(&script_path);
+    }
+
+    /// The bash child keeps the stdin form: `-s --` with the script
+    /// riding stdin (the curl|sh one-liner's own invocation), so the
+    /// fallback never displaces the sh-installed machine's continuity.
+    #[test]
+    #[cfg(windows)]
+    fn the_bash_child_keeps_the_stdin_form() {
+        let interpreter =
+            InstallerInterpreter::Bash(PathBuf::from("C:/Program Files/Git/bin/bash.exe"));
+        let (script, handle) = write_script(b"stub", "sh").expect("the temp script");
+        let mut command = installer_child(&interpreter, Path::new("prefix"), None);
+        interpreter
+            .invocation(&mut command, &script, &handle, &[])
+            .expect("the form applies");
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(std::ffi::OsStr::to_string_lossy)
+            .collect();
+        assert_eq!(
+            args,
+            vec!["-s", "--"],
+            "the bash leg rides stdin (the script is never opened by name)"
+        );
+        let _ = std::fs::remove_file(&script);
     }
 
     #[test]
@@ -1627,17 +1973,29 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         )
         .unwrap();
         let url = serve(MOCK_INSTALLER);
-        run_installer_from(&url, &prefix, Some("stable"), InstallerOutput::Capture)
-            .await
-            .expect("the funnel installs");
+        run_installer_from(
+            &url,
+            &mock_interpreter(),
+            &prefix,
+            Some("stable"),
+            InstallerOutput::Capture,
+        )
+        .await
+        .expect("the funnel installs");
         assert_eq!(
             std::fs::read_to_string(prefix.join("channel")).unwrap(),
             "stable"
         );
         let url = serve(MOCK_INSTALLER);
-        run_installer_from(&url, &prefix, None, InstallerOutput::Capture)
-            .await
-            .expect("the funnel installs");
+        run_installer_from(
+            &url,
+            &mock_interpreter(),
+            &prefix,
+            None,
+            InstallerOutput::Capture,
+        )
+        .await
+        .expect("the funnel installs");
         assert_eq!(
             std::fs::read_to_string(prefix.join("channel")).unwrap(),
             "beta"
@@ -1651,6 +2009,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         let (root, preserve, prefix) = sandbox();
         let installed = run_installer_from(
             &serve(MOCK_INSTALLER),
+            &mock_interpreter(),
             &prefix,
             None,
             InstallerOutput::Capture,
@@ -1676,6 +2035,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         let (root, _preserve, prefix) = sandbox();
         let installed = run_installer_from(
             &serve(LEGACY_INSTALLER),
+            &mock_interpreter(),
             &prefix,
             None,
             InstallerOutput::Capture,
@@ -1702,6 +2062,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
 
         let failure = run_installer_from(
             &serve("#!/bin/sh\necho 'install-rust.sh: the artifact download failed' >&2\nexit 3\n"),
+            &mock_interpreter(),
             &prefix,
             None,
             InstallerOutput::Capture,
@@ -1725,6 +2086,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         let (_root, _preserve, prefix) = sandbox();
         let failure = run_installer_from(
             "http://127.0.0.1:9/install-rust.sh",
+            &mock_interpreter(),
             &prefix,
             None,
             InstallerOutput::Capture,
@@ -1740,6 +2102,20 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             !prefix.join("bin").exists(),
             "nothing landed from a failed fetch"
         );
+    }
+
+    /// The interpreter the unix funnel tests run under: the tests' mock
+    /// scripts are sh. Windows callers never execute (their fetches fail
+    /// first), but the parameter still needs a value.
+    fn mock_interpreter() -> InstallerInterpreter {
+        #[cfg(not(windows))]
+        {
+            InstallerInterpreter::Sh
+        }
+        #[cfg(windows)]
+        {
+            InstallerInterpreter::Bash(PathBuf::from("bash"))
+        }
     }
 
     #[cfg(unix)]
