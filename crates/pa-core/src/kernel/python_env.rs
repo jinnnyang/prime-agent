@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[cfg(any(not(windows), test))]
 use std::ffi::OsStr;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Reject executable search paths inside the opened repository, even when the
 /// session cwd is a subdirectory. An ancestor can also expose project files.
@@ -44,6 +44,19 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
     path_starts_with(left, right) && path_starts_with(right, left)
 }
 
+/// The canonical form of `project`, also when the directory no longer exists:
+/// the nearest existing ancestor, canonicalized, with the missing components
+/// re-joined. Every project check runs on this path, so a link or junction
+/// cannot hide a repository behind a vanished directory.
+fn resolve_project(project: &Path) -> Option<PathBuf> {
+    if let Ok(canonical) = project.canonicalize() {
+        return Some(canonical);
+    }
+    let existing = project.ancestors().find(|ancestor| ancestor.exists())?;
+    let missing = project.strip_prefix(existing).ok()?;
+    Some(existing.canonicalize().ok()?.join(missing))
+}
+
 fn safe_path_with_mode(path: &Path, project: Option<&Path>, allow_ancestor: bool) -> bool {
     let Some(project) = project else {
         return false;
@@ -54,8 +67,8 @@ fn safe_path_with_mode(path: &Path, project: Option<&Path>, allow_ancestor: bool
     let Ok(canonical_path) = path.canonicalize() else {
         return false;
     };
-    let Ok(project) = project.canonicalize() else {
-        return permitted_by_vanished_project(path, &canonical_path, project, allow_ancestor);
+    let Some(project) = resolve_project(project) else {
+        return false;
     };
     let repository_roots: Vec<_> = project
         .ancestors()
@@ -76,42 +89,6 @@ fn safe_path_with_mode(path: &Path, project: Option<&Path>, allow_ancestor: bool
         .any(|boundary| reaches_boundary(path, &canonical_path, boundary, allow_ancestor))
 }
 
-/// A vanished project holds nothing checked in, so only the checkouts that
-/// enclose its path can supply a repository executable. Without one, the
-/// vanished path is the boundary, as for an existing project without a checkout.
-fn permitted_by_vanished_project(
-    path: &Path,
-    canonical_path: &Path,
-    vanished_project: &Path,
-    allow_ancestor: bool,
-) -> bool {
-    let checkouts: Vec<_> = vanished_project
-        .ancestors()
-        .filter(|ancestor| ancestor.join(".git").exists())
-        .collect();
-    if checkouts.is_empty() {
-        let Some(existing) = vanished_project
-            .ancestors()
-            .find(|ancestor| ancestor.exists())
-        else {
-            return false;
-        };
-        let Ok(canonical_existing) = existing.canonicalize() else {
-            return false;
-        };
-        let Ok(missing) = vanished_project.strip_prefix(existing) else {
-            return false;
-        };
-        let boundary = canonical_existing.join(missing);
-        return !reaches_boundary(path, canonical_path, &boundary, allow_ancestor);
-    }
-    checkouts.into_iter().all(|checkout| {
-        checkout.canonicalize().is_ok_and(|checkout| {
-            !reaches_boundary(path, canonical_path, &checkout, allow_ancestor)
-        })
-    })
-}
-
 fn reaches_boundary(
     path: &Path,
     canonical_path: &Path,
@@ -127,9 +104,9 @@ fn reaches_boundary(
 
 /// The single global uv install is a trusted executable even when HOME is an
 /// enclosing Git checkout. Without a project, nothing project-internal can be
-/// selected, so the pinned path alone decides. A vanished project still keeps
-/// any checkout that encloses its path. No other HOME path receives this
-/// exception.
+/// selected, so the pinned path alone decides. Only the nearest checkout of the
+/// project, existing or vanished, can exclude it. No other HOME path receives
+/// this exception.
 pub(crate) fn safe_home_uv(path: &Path, project: Option<&Path>) -> bool {
     safe_home_uv_with_home(path, project, pa_types::platform::home_dir().as_deref())
 }
@@ -160,8 +137,8 @@ fn safe_home_uv_with_home(path: &Path, project: Option<&Path>, home: Option<&Pat
     let Some(project) = project else {
         return true;
     };
-    let Ok(project) = project.canonicalize() else {
-        return permitted_by_vanished_project(path, &canonical_uv, project, true);
+    let Some(project) = resolve_project(project) else {
+        return false;
     };
     let nearest_checkout = project
         .ancestors()
@@ -491,6 +468,48 @@ mod tests {
             env.get(OsStr::new("PATH")),
             Some(&trusted.as_os_str().to_os_string())
         );
+    }
+
+    #[test]
+    fn a_vanished_project_under_a_nested_checkout_resolves_home_uv_like_an_existing_one() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let tool_dir = home.join(".local/bin");
+        let uv = tool_dir.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+        let nested = home.join("repo/sub");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(home.join(".git")).unwrap();
+        std::fs::create_dir(home.join("repo/.git")).unwrap();
+        std::fs::create_dir(nested.join(".git")).unwrap();
+        std::fs::write(&uv, "uv").unwrap();
+        assert!(safe_home_uv_with_home(&uv, Some(&nested), Some(&home)));
+        assert!(safe_home_uv_with_home(
+            &uv,
+            Some(&nested.join("gone")),
+            Some(&home)
+        ));
+    }
+
+    // symlink_dir needs SeCreateSymbolicLinkPrivilege, which the test process
+    // on the Windows dev box lacks (os error 1314); the Unix CI lane runs it.
+    #[cfg(unix)]
+    #[test]
+    fn a_vanished_project_behind_a_link_keeps_the_repository_it_resolves_to() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let app = repo.join("app");
+        let sibling = repo.join("tools");
+        let trusted = root.path().join("trusted");
+        for dir in [&app, &sibling, &trusted] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&app, &alias).unwrap();
+        let vanished = alias.join("gone");
+        assert!(!safe_executable_path(&sibling, Some(&vanished)));
+        assert!(safe_executable_path(&trusted, Some(&vanished)));
     }
 
     #[test]
