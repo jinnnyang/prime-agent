@@ -1092,3 +1092,19 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn a_row_write_failure_does_not_reach_the_caller() {
+    let dir = temp_dir();
+    let mut session = SessionFile::create("/repo", None, 0);
+    let path = dir.join(session_file_name(session.session_id()));
+    session.set_path(path.clone());
+    session.rewrite().unwrap();
+    // A directory where the transcript file should be makes the next append fail.
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(session
+        .persist_entry("custom", json!({"customType": "lost"}))
+        .is_err());
+    session.persist_entry_logged("custom", json!({"customType": "lost"}));
+}

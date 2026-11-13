@@ -936,7 +936,7 @@ fn emit_refinement_row(
             );
             return false;
         }
-        let _ = store.persist_entry(
+        store.persist_entry_logged(
             "custom_message",
             json!({
                 "customType": message.get("customType").cloned().unwrap_or(Value::Null),

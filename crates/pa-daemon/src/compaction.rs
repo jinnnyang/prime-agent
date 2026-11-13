@@ -244,7 +244,7 @@ impl CompactionManager {
                 .unwrap_or(first_kept_entry_id)
         };
         fields["firstKeptEntryId"] = json!(first_kept_entry_id);
-        let _ = store.persist_entry("compaction", fields);
+        store.persist_entry_logged("compaction", fields);
     }
 
     /// Persist the post-compaction `ipython_state` row and broadcast its `message_start`/

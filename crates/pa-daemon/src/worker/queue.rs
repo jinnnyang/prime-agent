@@ -475,7 +475,7 @@ pub(crate) fn admit_goal_follow_up(
         {
             let mut guard = core.lock().unwrap();
             if let Some(store) = guard.store.as_mut() {
-                let _ = store.persist_entry(
+                store.persist_entry_logged(
                     "custom",
                     json!({
                         "customType": pa_core::goals::GOAL_STATE_CUSTOM_TYPE,

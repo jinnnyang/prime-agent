@@ -100,7 +100,7 @@ impl Worker {
                 if let Some(store) = core.store.as_mut() {
                     // TS `appendModelChange` records every switch, even to
                     // the current model.
-                    let _ = store.persist_entry(
+                    store.persist_entry_logged(
                         "model_change",
                         serde_json::json!({ "provider": provider, "modelId": model_id }),
                     );
@@ -190,7 +190,7 @@ impl Worker {
             let cwd = {
                 let mut core = core.lock().unwrap();
                 if let Some(store) = core.store.as_mut() {
-                    let _ = store.persist_entry(
+                    store.persist_entry_logged(
                         "thinking_level_change",
                         serde_json::json!({ "thinkingLevel": effective }),
                     );

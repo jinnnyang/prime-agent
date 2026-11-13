@@ -266,7 +266,7 @@ pub(crate) fn persist_custom_row(
     message: &Value,
 ) {
     if let Some(store) = core.store.as_mut() {
-        let _ = store.persist_entry(
+        store.persist_entry_logged(
             "custom_message",
             json!({
                 "customType": message.get("customType").cloned().unwrap_or(Value::Null),
