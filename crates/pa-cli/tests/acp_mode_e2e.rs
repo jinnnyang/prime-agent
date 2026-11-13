@@ -224,6 +224,12 @@ fn daemon_attached_command(
         .arg("--daemon-socket")
         .arg(socket)
         .env("HOME", home)
+        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
+        .env_remove("PRIME_AGENT_SESSION_DIR")
+        .env(
+            "PRIME_AGENT_KERNEL_VENV",
+            concat!(env!("CARGO_TARGET_TMPDIR"), "/acp-e2e-kernel-venv"),
+        )
         .env("PRIME_AGENT_FAUX_SCRIPT", home.join("worker-script.json"))
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
