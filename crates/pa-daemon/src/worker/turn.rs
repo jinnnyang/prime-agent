@@ -616,11 +616,7 @@ impl TurnRunner {
                     | EngineEvent::AssistantMessage(message)
                     | EngineEvent::ToolResultMessage(message) => {
                         if let Some(store) = core.store.as_mut() {
-                            if let Err(error) =
-                                store.persist_entry("message", json!({ "message": message }))
-                            {
-                                eprintln!("pa-daemon: message row not persisted: {error:#}");
-                            }
+                            store.persist_entry_logged("message", json!({ "message": message }));
                         }
                     }
                     // The in-flight tool-call set, updated under the same core lock
@@ -637,7 +633,7 @@ impl TurnRunner {
                     }
                     EngineEvent::CustomMessage(message) => {
                         if let Some(store) = core.store.as_mut() {
-                            let _ = store.persist_entry(
+                            store.persist_entry_logged(
                                 "custom_message",
                                 json!({
                                     "customType": message.get("customType").cloned().unwrap_or(Value::Null),
@@ -653,7 +649,7 @@ impl TurnRunner {
                         // publish the event, never persist it.
                         if let Some(store) = core.store.as_mut().filter(|_| !entry.is_null()) {
                             let persist_started = std::time::Instant::now();
-                            let _ = store.persist_entry("compaction", entry.clone());
+                            store.persist_entry_logged("compaction", entry.clone());
                             pa_core::session_engine::compaction_trace::trace(
                                 "emit.compaction_persist",
                                 &serde_json::json!({
@@ -665,7 +661,7 @@ impl TurnRunner {
                     // The durable mirror of a goal-state change: each row is the new state.
                     EngineEvent::GoalUpdate { goal } => {
                         if let Some(store) = core.store.as_mut() {
-                            let _ = store.persist_entry(
+                            store.persist_entry_logged(
                                 "custom",
                                 json!({
                                     "customType": pa_core::goals::GOAL_STATE_CUSTOM_TYPE,
@@ -951,7 +947,7 @@ impl TurnRunner {
                         let outcome = crate::session_commands::custom_message_value(&outcome);
                         if outcome.is_object() {
                             if let Some(store) = core.store.as_mut() {
-                                let _ = store.persist_entry(
+                                store.persist_entry_logged(
                                     "custom_message",
                                     json!({
                                         "customType": outcome.get("customType").cloned().unwrap_or(Value::Null),

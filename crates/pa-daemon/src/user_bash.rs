@@ -745,7 +745,7 @@ fn record_bash_result(
     if exclude_from_context {
         row["excludeFromContext"] = json!(true);
     }
-    let _ = store.persist_entry("message", json!({ "message": row }));
+    store.persist_entry_logged("message", json!({ "message": row }));
 }
 
 /// Sanitize one output chunk (TS `strip-ansi` + `sanitizeBinaryOutput` +

@@ -157,6 +157,14 @@ impl SessionFile {
         self.persist_entry_at(entry_type, fields, &crate::util::now_iso())
     }
 
+    /// Persists a row the caller cannot fail on. A write error is logged to stderr instead of
+    /// returned, so a lost row leaves a trace.
+    pub fn persist_entry_logged(&mut self, entry_type: &str, fields: Value) {
+        if let Err(error) = self.persist_entry(entry_type, fields) {
+            eprintln!("pa-daemon: {entry_type} row not persisted: {error:#}");
+        }
+    }
+
     /// Durably mark that this session has drawn the Anthropic subscription
     /// ban-risk warning (the once-per-session-lifecycle gate, operator
     /// directive 2026-09-29): append the

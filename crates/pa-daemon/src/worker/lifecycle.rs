@@ -513,7 +513,7 @@ impl Worker {
                             {
                                 let mut core = self.core.lock().unwrap();
                                 if let Some(store) = core.store.as_mut() {
-                                    let _ = store.persist_entry(
+                                    store.persist_entry_logged(
                                         "custom",
                                         json!({
                                             "customType": pa_core::goals::GOAL_STATE_CUSTOM_TYPE,

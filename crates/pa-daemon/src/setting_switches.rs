@@ -188,7 +188,7 @@ impl Worker {
             let cwd = {
                 let mut core = core.lock().unwrap();
                 if let Some(store) = core.store.as_mut() {
-                    let _ = store.persist_entry(
+                    store.persist_entry_logged(
                         "model_change",
                         json!({ "provider": provider, "modelId": model_id }),
                     );
