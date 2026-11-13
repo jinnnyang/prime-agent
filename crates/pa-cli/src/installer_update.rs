@@ -173,7 +173,7 @@ pub fn run(options: &UpdateOptions) -> i32 {
     });
     warn_http_base(&base);
     println!(
-        "Updating to the latest Rust build — fetching the installer from {}:",
+        "Updating to the latest version — fetching the installer from {}:",
         installer::installer_script_url(Some(channel))
     );
     match runtime.block_on(installer::run_installer(

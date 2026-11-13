@@ -2,11 +2,6 @@
 
 pub use allowlist::{model_allowed, ModelAllowlistRefusal};
 pub use catalog_visibility::{CatalogVisibility, FilterSummary, FilteredModels, NOT_IN_ALLOW};
-pub use private_auth::{
-    get_private_prime_inference_models, private_prime_authorization_fingerprint,
-    read_private_prime_authorization_cache, write_private_prime_authorization_cache,
-    PrivatePrimeAuthorizationCache, PRIVATE_PRIME_AUTHORIZATION_CACHE_TTL_MS,
-};
 pub use registry::{
     ModelRegistry, ProviderRequestConfig, ResolvedRequestAuth, SetModelSelectionError,
 };
@@ -25,8 +20,6 @@ pub mod catalog_visibility;
 pub(crate) mod custom;
 pub mod image_model_routing;
 pub(crate) mod prime_inference;
-pub(crate) mod prime_inference_catalog;
-pub(crate) mod private_auth;
 pub(crate) mod registry;
 pub(crate) mod resolver;
 pub(crate) mod session_restore;
