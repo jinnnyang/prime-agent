@@ -1,0 +1,1 @@
+- ACP mode no longer hangs on Windows when the daemon it starts would otherwise keep the client's stdout and stderr pipes open.
