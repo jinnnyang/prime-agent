@@ -18,7 +18,7 @@ Every contributor (human or agent) must read this before working on this repo.
   noreply forms) misattribute commits to unrelated GitHub accounts.
 - The authoritative repo is the fork `jinnnyang/prime-agent`; the Rust implementation lives on
   the `main` branch. Upstream lives at `PrimeIntellect-ai/prime-agent` and syncs through the
-  `uptream` mirror branch.
+  `upstream` mirror branch.
 - PRs go to the fork `jinnnyang/prime-agent` with base `main`:
   `gh pr create --repo jinnnyang/prime-agent --base main`.
 - CI runs on the fork's GitHub billing: `.github/workflows/ci.yml` on PRs and
@@ -220,7 +220,7 @@ This project is indexed by GitNexus as **prime-agent** (44476 symbols, 125806 re
 ## Always Do
 
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "uptream"})`.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "upstream"})`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
