@@ -631,6 +631,20 @@ mod tests {
     }
 
     #[test]
+    fn a_lease_taken_before_its_session_directory_exists_accepts_the_appends_that_follow() {
+        let dir = tempfile::tempdir().unwrap();
+        // The `.` segment keeps the spelling taken at acquisition apart from the canonical path
+        // the append computes once the directory exists.
+        let path = dir.path().join("sessions/./session.jsonl");
+        let lease = acquire_runtime_session_lease(&path, dir.path()).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}\n").unwrap();
+        lease
+            .append(&path, b"{}\n")
+            .expect("the lease taken before the directory existed owns its appends");
+    }
+
+    #[test]
     fn lease_conflicts_and_releases() {
         let dir = std::env::temp_dir().join(format!("pa-lease-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
