@@ -37,8 +37,9 @@ fn find_executable(name: &str, path_value: &OsStr, project: Option<&Path>) -> Op
 #[cfg(any(windows, test))]
 const WINDOWS_PATHEXT_DEFAULT: [&str; 4] = [".COM", ".EXE", ".BAT", ".CMD"];
 
-/// The bare name followed by the supported PATHEXT extensions, in `PATHEXT` order, else the TS
-/// default order. A name that already ends in a default extension is never suffixed again.
+/// The supported PATHEXT extensions applied to `name`, in `PATHEXT` order, else the TS default
+/// order. A name that already ends in a default extension is returned as-is. The bare name is
+/// never a candidate: an extensionless file would shadow the real `.exe` and cannot be spawned.
 #[cfg(any(windows, test))]
 pub(super) fn windows_executable_candidates(name: &str, pathext: Option<&str>) -> Vec<String> {
     let extensions = pathext
@@ -68,15 +69,12 @@ pub(super) fn windows_executable_candidates(name: &str, pathext: Option<&str>) -
     } else {
         &extensions
     };
-    let mut seen = std::collections::HashSet::from([lower_name]);
-    let mut candidates = vec![name.to_string()];
-    for ext in source {
-        let candidate = format!("{name}{ext}");
-        if seen.insert(candidate.to_lowercase()) {
-            candidates.push(candidate);
-        }
-    }
-    candidates
+    let mut seen = std::collections::HashSet::new();
+    source
+        .iter()
+        .map(|ext| format!("{name}{ext}"))
+        .filter(|candidate| seen.insert(candidate.to_lowercase()))
+        .collect()
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -204,6 +202,37 @@ mod safe_uv_tests {
         assert_eq!(
             find_executable("uv", &path, Some(filesystem_root)),
             Some(uv)
+        );
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn uv_search_applies_the_vanished_project_rule() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let vanished = repo.join("app/gone");
+        let sibling = repo.join("tools");
+        let trusted = root.path().join("trusted");
+        for dir in [repo.join("app"), sibling.clone(), trusted.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let uv_name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        for dir in [&sibling, &trusted] {
+            let uv = dir.join(uv_name);
+            std::fs::write(&uv, "uv").unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&uv, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+        }
+        let path = std::env::join_paths([&sibling, &trusted]).unwrap();
+        assert_eq!(
+            find_executable("uv", &path, Some(&vanished)),
+            Some(trusted.join(uv_name))
         );
     }
 }

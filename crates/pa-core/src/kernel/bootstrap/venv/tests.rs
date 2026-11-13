@@ -6,8 +6,7 @@ fn windows_executable_candidates_default_order() {
     assert_eq!(
         windows_executable_candidates("uv", None),
         vec![
-            "uv".to_string(),
-            "uv.COM".into(),
+            "uv.COM".to_string(),
             "uv.EXE".into(),
             "uv.BAT".into(),
             "uv.CMD".into()
@@ -19,7 +18,7 @@ fn windows_executable_candidates_default_order() {
 fn windows_executable_candidates_follows_pathext_order() {
     assert_eq!(
         windows_executable_candidates("uv", Some(".FOO;.EXE;.BAT")),
-        vec!["uv".to_string(), "uv.exe".into(), "uv.bat".into()]
+        vec!["uv.exe".to_string(), "uv.bat".into()]
     );
 }
 
@@ -32,8 +31,7 @@ fn windows_executable_candidates_skips_suffix_and_duplicates() {
     assert_eq!(
         windows_executable_candidates("node", Some("")),
         vec![
-            "node".to_string(),
-            "node.COM".into(),
+            "node.COM".to_string(),
             "node.EXE".into(),
             "node.BAT".into(),
             "node.CMD".into()
