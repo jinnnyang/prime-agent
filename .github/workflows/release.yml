@@ -236,6 +236,8 @@ jobs:
           set -euo pipefail
           python3 scripts/release/bundle_catalog.py generate --network \
             --catalog-ref "${CATALOG_REF}" --out "target/${{ matrix.target }}/catalog-assets"
+      - name: Install cargo-about (renders the archive's third-party notices)
+        uses: ./.github/actions/install-cargo-about
       - name: Assemble tarball + checksums + manifest
         # Assemble from the separate SHIPPED image; the Cargo binary stays
         # unstripped. The decoder remains a separate release asset.
@@ -328,10 +330,6 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            # Both darwin legs share the macos-15 M-series pool: the
-            # macos-14 label stopped scheduling mid-November 2026 (the
-            # "macos-14-arm64-us-default" configuration is not supported
-            # any more), and both legs were native arm64 builds before.
             runs-on: macos-15
           # The x86_64 leg cross-compiles on the Apple-silicon pool: rustc
           # and the Xcode linker build either darwin arch from an M-series
@@ -386,6 +384,8 @@ jobs:
           set -euo pipefail
           python3 scripts/release/bundle_catalog.py generate --network \
             --catalog-ref "${CATALOG_REF}" --out "target/${{ matrix.target }}/catalog-assets"
+      - name: Install cargo-about (renders the archive's third-party notices)
+        uses: ./.github/actions/install-cargo-about
       - name: Assemble tarball + checksums + manifest
         run: |
           set -euo pipefail
@@ -507,6 +507,8 @@ jobs:
           set -euo pipefail
           "${PY}" scripts/release/bundle_catalog.py generate --network \
             --catalog-ref "${CATALOG_REF}" --out "target/${{ matrix.target }}/catalog-assets"
+      - name: Install cargo-about (renders the archive's third-party notices)
+        uses: ./.github/actions/install-cargo-about
       - name: Assemble tarball + checksums + manifest
         shell: bash
         run: |

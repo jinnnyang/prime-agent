@@ -69,23 +69,25 @@ impl SessionAlreadyActiveError {
     }
 }
 
+/// The canonical spelling of a session path that may not exist yet: the
+/// nearest existing ancestor is canonicalized and the missing tail rejoined,
+/// so a lease taken before the file (or its directory) exists names the same
+/// path the file canonicalizes to once created.
 #[must_use]
 pub fn canonical_session_path(path: &Path) -> PathBuf {
-    // A path whose directories do not exist yet is canonicalized through its nearest existing
-    // ancestor, so the same file keys identically before and after it is created.
     let mut missing = Vec::new();
-    let mut ancestor = path;
+    let mut existing = path;
     loop {
-        if let Ok(canonical) = ancestor.canonicalize() {
+        if let Ok(canonical) = existing.canonicalize() {
             return missing
                 .iter()
                 .rev()
                 .fold(canonical, |joined, part| joined.join(part));
         }
-        match (ancestor.file_name(), ancestor.parent()) {
-            (Some(name), Some(parent)) => {
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
                 missing.push(name);
-                ancestor = parent;
+                existing = parent;
             }
             _ => return path.to_path_buf(),
         }
@@ -942,6 +944,25 @@ mod tests {
         }
         let unrelated = std::io::Error::from(std::io::ErrorKind::NotFound);
         assert_eq!(reclaim_retry_delay_ms(true, &unrelated, 1), None);
+    }
+
+    /// A lease taken before the sessions dir exists, under a symlinked
+    /// component, still owns the file once it is created.
+    #[cfg(unix)]
+    #[test]
+    fn a_lease_taken_before_its_sessions_dir_exists_owns_the_created_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let agent_dir = link.join("agent");
+        let path = agent_dir.join("sessions").join("session.jsonl");
+        let lease = acquire_runtime_session_lease(&path, &agent_dir).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{}\n").unwrap();
+        lease.append(&path, b"{}\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}\n{}\n");
     }
 
     #[test]
