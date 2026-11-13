@@ -616,7 +616,11 @@ impl TurnRunner {
                     | EngineEvent::AssistantMessage(message)
                     | EngineEvent::ToolResultMessage(message) => {
                         if let Some(store) = core.store.as_mut() {
-                            let _ = store.persist_entry("message", json!({ "message": message }));
+                            if let Err(error) =
+                                store.persist_entry("message", json!({ "message": message }))
+                            {
+                                eprintln!("pa-daemon: message row not persisted: {error:#}");
+                            }
                         }
                     }
                     // The in-flight tool-call set, updated under the same core lock

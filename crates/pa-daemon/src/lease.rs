@@ -70,12 +70,24 @@ impl SessionAlreadyActiveError {
 }
 
 pub fn canonical_session_path(path: &Path) -> PathBuf {
-    match path.canonicalize() {
-        Ok(canonical) => canonical,
-        Err(_) => match path.parent().map(std::path::Path::canonicalize) {
-            Some(Ok(parent)) => parent.join(path.file_name().unwrap_or_default()),
-            _ => path.to_path_buf(),
-        },
+    // A path whose directories do not exist yet is canonicalized through its nearest existing
+    // ancestor, so the same file keys identically before and after it is created.
+    let mut missing = Vec::new();
+    let mut ancestor = path;
+    loop {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            return missing
+                .iter()
+                .rev()
+                .fold(canonical, |joined, part| joined.join(part));
+        }
+        match (ancestor.file_name(), ancestor.parent()) {
+            (Some(name), Some(parent)) => {
+                missing.push(name);
+                ancestor = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
     }
 }
 

@@ -1,0 +1,1 @@
+- Fixed session messages going missing on Windows when the sessions directory did not exist yet; a dropped message row is now logged instead of silently discarded.
