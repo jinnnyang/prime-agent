@@ -69,13 +69,26 @@ impl SessionAlreadyActiveError {
     }
 }
 
+#[must_use]
 pub fn canonical_session_path(path: &Path) -> PathBuf {
-    match path.canonicalize() {
-        Ok(canonical) => canonical,
-        Err(_) => match path.parent().map(std::path::Path::canonicalize) {
-            Some(Ok(parent)) => parent.join(path.file_name().unwrap_or_default()),
-            _ => path.to_path_buf(),
-        },
+    // A path whose directories do not exist yet is canonicalized through its nearest existing
+    // ancestor, so the same file keys identically before and after it is created.
+    let mut missing = Vec::new();
+    let mut ancestor = path;
+    loop {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            return missing
+                .iter()
+                .rev()
+                .fold(canonical, |joined, part| joined.join(part));
+        }
+        match (ancestor.file_name(), ancestor.parent()) {
+            (Some(name), Some(parent)) => {
+                missing.push(name);
+                ancestor = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
     }
 }
 
@@ -628,6 +641,20 @@ mod tests {
         drop(shared);
         let next = acquire_runtime_session_lease(&path, dir.path()).unwrap();
         assert_eq!(next.session_path, canonical_session_path(&path));
+    }
+
+    #[test]
+    fn a_lease_taken_before_its_session_directory_exists_accepts_the_appends_that_follow() {
+        let dir = tempfile::tempdir().unwrap();
+        // The `.` segment keeps the spelling taken at acquisition apart from the canonical path
+        // the append computes once the directory exists.
+        let path = dir.path().join("sessions/./session.jsonl");
+        let lease = acquire_runtime_session_lease(&path, dir.path()).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}\n").unwrap();
+        lease
+            .append(&path, b"{}\n")
+            .expect("the lease taken before the directory existed owns its appends");
     }
 
     #[test]
