@@ -464,15 +464,20 @@ fn acp_cwd_mismatch_is_reported_not_adopted() {
     let mut client = AcpChild::spawn(&["--mode", "acp", "--no-session"], &script);
     let init = client.request("initialize", &initialize_params());
     let _ = client.wait_response(init, TIMEOUT);
-    let new = client.request("session/new", &json!({ "cwd": "/tmp", "mcpServers": [] }));
+    let requested = std::env::temp_dir().join("pa-cwd-mismatch-requested");
+    let requested = requested.to_string_lossy();
+    let new = client.request(
+        "session/new",
+        &json!({ "cwd": requested, "mcpServers": [] }),
+    );
     let (new_response, _) = client.wait_response(new, TIMEOUT);
     let meta = &new_response["result"]["_meta"]["ai.primeintellect.prime-agent"]["cwd"];
-    assert_eq!(meta["requested"], "/tmp");
+    assert_eq!(meta["requested"], json!(requested));
     // The actual cwd is the temp dir the client runs in; only the mismatch shape is asserted here
     // (the value is tempdir-random).
     assert!(meta["actual"]
         .as_str()
-        .is_some_and(|actual| actual.starts_with(std::path::MAIN_SEPARATOR)));
+        .is_some_and(|actual| std::path::Path::new(actual).is_absolute()));
 }
 
 #[test]
