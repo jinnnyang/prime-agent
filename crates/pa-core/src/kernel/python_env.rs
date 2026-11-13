@@ -420,6 +420,28 @@ mod tests {
     }
 
     #[test]
+    fn a_vanished_project_drops_path_entries_inside_its_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        let vanished = repo.join("app/gone");
+        let sibling = repo.join("tools");
+        let trusted = root.path().join("trusted");
+        for dir in [repo.join("app"), sibling.clone(), trusted.clone()] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let mut env = HashMap::from([(
+            OsString::from("PATH"),
+            std::env::join_paths([&sibling, &trusted]).unwrap(),
+        )]);
+        sanitize_uv_path(&mut env, Some(&vanished));
+        assert_eq!(
+            env.get(OsStr::new("PATH")),
+            Some(&trusted.as_os_str().to_os_string())
+        );
+    }
+
+    #[test]
     fn a_vanished_project_without_a_checkout_keeps_path_entries() {
         let root = tempfile::tempdir().unwrap();
         let vanished = root.path().join("gone");
