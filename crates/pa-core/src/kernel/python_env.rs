@@ -77,21 +77,39 @@ fn safe_path_with_mode(path: &Path, project: Option<&Path>, allow_ancestor: bool
 }
 
 /// A vanished project holds nothing checked in, so only the checkouts that
-/// enclose its path can supply a repository executable.
+/// enclose its path can supply a repository executable. Without one, the
+/// vanished path is the boundary, as for an existing project without a checkout.
 fn permitted_by_vanished_project(
     path: &Path,
     canonical_path: &Path,
     vanished_project: &Path,
     allow_ancestor: bool,
 ) -> bool {
-    vanished_project
+    let checkouts: Vec<_> = vanished_project
         .ancestors()
         .filter(|ancestor| ancestor.join(".git").exists())
-        .all(|checkout| {
-            checkout.canonicalize().is_ok_and(|checkout| {
-                !reaches_boundary(path, canonical_path, &checkout, allow_ancestor)
-            })
+        .collect();
+    if checkouts.is_empty() {
+        let Some(existing) = vanished_project
+            .ancestors()
+            .find(|ancestor| ancestor.exists())
+        else {
+            return false;
+        };
+        let Ok(canonical_existing) = existing.canonicalize() else {
+            return false;
+        };
+        let Ok(missing) = vanished_project.strip_prefix(existing) else {
+            return false;
+        };
+        let boundary = canonical_existing.join(missing);
+        return !reaches_boundary(path, canonical_path, &boundary, allow_ancestor);
+    }
+    checkouts.into_iter().all(|checkout| {
+        checkout.canonicalize().is_ok_and(|checkout| {
+            !reaches_boundary(path, canonical_path, &checkout, allow_ancestor)
         })
+    })
 }
 
 fn reaches_boundary(
@@ -439,6 +457,22 @@ mod tests {
             env.get(OsStr::new("PATH")),
             Some(&trusted.as_os_str().to_os_string())
         );
+    }
+
+    #[test]
+    fn a_vanished_project_filters_path_like_an_existing_one() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing");
+        let vanished = root.path().join("vanished");
+        std::fs::create_dir_all(&existing).unwrap();
+        let ancestor = root.path().to_path_buf();
+        let path_with_ancestor = std::env::join_paths([&ancestor]).unwrap();
+        let filter = |project: &Path| {
+            let mut env = HashMap::from([(OsString::from("PATH"), path_with_ancestor.clone())]);
+            sanitize_uv_path(&mut env, Some(project));
+            env.get(OsStr::new("PATH")).cloned()
+        };
+        assert_eq!(filter(&vanished), filter(&existing));
     }
 
     #[test]
