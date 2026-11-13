@@ -491,9 +491,6 @@ mod tests {
         ));
     }
 
-    // symlink_dir needs SeCreateSymbolicLinkPrivilege, which the test process
-    // on the Windows dev box lacks (os error 1314); the Unix CI lane runs it.
-    #[cfg(unix)]
     #[test]
     fn a_vanished_project_behind_a_link_keeps_the_repository_it_resolves_to() {
         let root = tempfile::tempdir().unwrap();
@@ -506,7 +503,10 @@ mod tests {
         }
         std::fs::create_dir(repo.join(".git")).unwrap();
         let alias = root.path().join("alias");
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&app, &alias).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&app, &alias).unwrap();
         let vanished = alias.join("gone");
         assert!(!safe_executable_path(&sibling, Some(&vanished)));
         assert!(safe_executable_path(&trusted, Some(&vanished)));
