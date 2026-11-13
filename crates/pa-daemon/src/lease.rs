@@ -69,6 +69,7 @@ impl SessionAlreadyActiveError {
     }
 }
 
+#[must_use]
 pub fn canonical_session_path(path: &Path) -> PathBuf {
     // A path whose directories do not exist yet is canonicalized through its nearest existing
     // ancestor, so the same file keys identically before and after it is created.
