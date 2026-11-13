@@ -588,6 +588,19 @@ pub fn normalized_exit_code(status: &std::process::ExitStatus) -> Option<i32> {
         .or_else(|| termination_signal(status).map(|signal| 128 + signal))
 }
 
+/// Keep this process's standard handles away from the children it spawns. Windows hands every
+/// inheritable handle to a child started with inherited handles, so a daemon started from a
+/// process whose stdout is a pipe would hold that pipe open for its whole lifetime. Children that
+/// need the standard handles still get them: `Stdio::inherit` duplicates them as inheritable.
+///
+/// # Errors
+///
+/// Returns the OS error when a standard handle's inherit flag cannot be cleared.
+#[cfg(windows)]
+pub fn keep_standard_handles_from_children() -> std::io::Result<()> {
+    win32::clear_standard_handle_inheritance()
+}
+
 /// The kernel32 termination surface for [`kill_pid`], hand-declared (repo
 /// policy: pinned constants and externs, no windows-sys dependency).
 #[cfg(windows)]
@@ -618,6 +631,32 @@ mod win32 {
         unsafe { CloseHandle(handle) };
         terminated
     }
+
+    /// `winbase.h` `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, `STD_ERROR_HANDLE` (-10, -11, -12).
+    const STANDARD_HANDLES: [u32; 3] = [0xFFFF_FFF6, 0xFFFF_FFF5, 0xFFFF_FFF4];
+    /// `winbase.h` `HANDLE_FLAG_INHERIT`.
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+
+    extern "system" {
+        fn GetStdHandle(std_handle: u32) -> Handle;
+        fn SetHandleInformation(object: Handle, mask: u32, flags: u32) -> i32;
+    }
+
+    /// Clear the inherit flag on each standard handle this process holds. The handles stay usable
+    /// here; only later child processes stop receiving them.
+    pub(crate) fn clear_standard_handle_inheritance() -> std::io::Result<()> {
+        for which in STANDARD_HANDLES {
+            let handle = unsafe { GetStdHandle(which) };
+            // A null or invalid handle means the process has no such standard stream.
+            if handle.is_null() || handle as isize == -1 {
+                continue;
+            }
+            if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -636,6 +675,52 @@ mod windows_tests {
         assert!(!kill_pid(-1, Signal::Kill));
         assert!(!kill_pid(0, Signal::Term));
         assert!(!kill_process_group_or_pid(-1));
+    }
+
+    /// Environment marker that makes the re-run test binary act as the parent role below.
+    const STDIO_LEAK_PARENT_ROLE: &str = "PA_TEST_STDIO_LEAK_PARENT";
+
+    /// A parent that spawns a long-lived grandchild with null stdio must not leave its stdout pipe
+    /// open after exiting: Windows hands every inheritable handle to the child, so a stray copy of
+    /// the parent's stdout keeps the reader from ever seeing EOF.
+    #[test]
+    fn a_spawned_child_does_not_hold_the_parent_stdout_pipe() {
+        if std::env::var_os(STDIO_LEAK_PARENT_ROLE).is_some() {
+            keep_standard_handles_from_children().expect("clear standard handle inheritance");
+            // The grandchild must outlive this parent role: its open handle is the thing under test.
+            #[allow(clippy::zombie_processes)]
+            let _grandchild = std::process::Command::new("cmd")
+                .args(["/C", "ping", "-n", "30", "127.0.0.1"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn grandchild");
+            return;
+        }
+        let mut parent = std::process::Command::new(std::env::current_exe().expect("test exe"))
+            .args([
+                "--exact",
+                "platform::process::windows_tests::a_spawned_child_does_not_hold_the_parent_stdout_pipe",
+                "--nocapture",
+            ])
+            .env(STDIO_LEAK_PARENT_ROLE, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn parent role");
+        let mut stdout = parent.stdout.take().expect("piped stdout");
+        let (eof_tx, eof_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stdout, &mut sink);
+            let _ = eof_tx.send(());
+        });
+        eof_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the grandchild held the parent's stdout open after the parent exited");
+        assert!(parent.wait().expect("reap parent role").success());
     }
 }
 

@@ -255,6 +255,9 @@ fn worker_descriptor(home: &std::path::Path) -> Value {
 
 impl Drop for AcpChild {
     fn drop(&mut self) {
+        // Shut the daemon down first: until it exits, it holds the pipes whose EOF the
+        // stderr read below waits for.
+        shutdown_sandboxed_daemon(&self.socket);
         let _ = self.child.kill();
         let _ = self.child.wait();
         if let Some(mut stderr) = self.spawn_stderr.take() {
@@ -265,7 +268,6 @@ impl Drop for AcpChild {
                 eprintln!("ACP child stderr: {text}");
             }
         }
-        shutdown_sandboxed_daemon(&self.socket);
     }
 }
 
@@ -831,6 +833,9 @@ fn acp_daemon_attached_eof_teardown_clears_the_connection_mcp_servers() {
     );
 }
 
+// Unix-only: the daemon endpoint on Windows is a named pipe, which a regular file at the
+// socket path does not block, so the daemon starts and the premise of the test does not hold.
+#[cfg(unix)]
 #[test]
 fn acp_mode_daemon_unreachable_exits_1_without_fallback() {
     let home = tempfile::TempDir::new().unwrap();

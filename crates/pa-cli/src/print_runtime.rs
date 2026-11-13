@@ -101,6 +101,10 @@ async fn acp_mode_main(options: &RunOptions) -> Result<i32, String> {
     // would target the TypeScript default socket and treat the schema
     // mismatch as a stale daemon).
     let socket_path = crate::config::resolve_daemon_socket_path(options.daemon_socket.as_deref());
+    // The daemon this mode may start must not hold the ACP client's stdio pipes open.
+    #[cfg(windows)]
+    pa_core::platform::process::keep_standard_handles_from_children()
+        .map_err(|error| format!("{error:#}"))?;
     crate::interactive_mode::ensure_daemon_running(&socket_path, &options.config.cwd)
         .await
         .map_err(|error| format!("{error:#}"))?;
