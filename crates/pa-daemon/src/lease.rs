@@ -76,6 +76,9 @@ impl SessionAlreadyActiveError {
 #[must_use]
 pub fn canonical_session_path(path: &Path) -> PathBuf {
     let mut missing = Vec::new();
+    // A `..` in the missing tail cancels the name above it. Nothing in the
+    // tail exists, so this is lexical and cannot follow a symlink.
+    let mut pending_parents = 0usize;
     let mut existing = path;
     loop {
         if let Ok(canonical) = existing.canonicalize() {
@@ -86,7 +89,15 @@ pub fn canonical_session_path(path: &Path) -> PathBuf {
         }
         match (existing.parent(), existing.file_name()) {
             (Some(parent), Some(name)) => {
-                missing.push(name);
+                if pending_parents == 0 {
+                    missing.push(name);
+                } else {
+                    pending_parents -= 1;
+                }
+                existing = parent;
+            }
+            (Some(parent), None) if existing.ends_with("..") => {
+                pending_parents += 1;
                 existing = parent;
             }
             _ => return path.to_path_buf(),
