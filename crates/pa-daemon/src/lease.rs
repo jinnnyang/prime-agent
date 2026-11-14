@@ -646,6 +646,16 @@ mod tests {
     }
 
     #[test]
+    fn canonical_session_path_normalizes_a_dotdot_in_the_missing_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing/../session.jsonl");
+        assert_eq!(
+            canonical_session_path(&path),
+            dir.path().canonicalize().unwrap().join("session.jsonl")
+        );
+    }
+
+    #[test]
     fn a_lease_taken_before_its_session_directory_exists_accepts_the_appends_that_follow() {
         let dir = tempfile::tempdir().unwrap();
         // The `.` segment keeps the spelling taken at acquisition apart from the canonical path
