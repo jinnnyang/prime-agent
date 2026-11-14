@@ -1107,16 +1107,42 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
 
 #[test]
 fn a_row_write_failure_does_not_reach_the_caller() {
-    let dir = temp_dir();
-    let mut session = SessionFile::create("/repo", None, 0);
-    let path = dir.join(session_file_name(session.session_id()));
-    session.set_path(path.clone());
-    session.rewrite().unwrap();
-    // A directory where the transcript file should be makes the next append fail.
-    fs::remove_file(&path).unwrap();
-    fs::create_dir(&path).unwrap();
-    assert!(session
-        .persist_entry("custom", json!({"customType": "lost"}))
-        .is_err());
-    session.persist_entry_logged("custom", json!({"customType": "lost"}));
+    // `persist_entry_logged` writes its line to the process stderr, which no
+    // in-process hook can read. The failing write therefore runs in a child
+    // test process, and its stderr is read back here.
+    const CHILD_ENV: &str = "PA_ROW_WRITE_FAILURE_CHILD";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let dir = temp_dir();
+        let mut session = SessionFile::create("/repo", None, 0);
+        let path = dir.join(session_file_name(session.session_id()));
+        session.set_path(path.clone());
+        session.rewrite().unwrap();
+        // A directory where the transcript file should be makes the next append fail.
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(session
+            .persist_entry("custom", json!({"customType": "lost"}))
+            .is_err());
+        session.persist_entry_logged("custom", json!({"customType": "lost"}));
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "session_store::tests::a_row_write_failure_does_not_reach_the_caller",
+            "--nocapture",
+        ])
+        .env(CHILD_ENV, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the failing write reached the caller: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let logged: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("pa-daemon: custom row not persisted: "))
+        .collect();
+    assert_eq!(logged.len(), 1, "the lost row is logged once: {stderr}");
 }
