@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pa_types::daemon::{DaemonCommand, DaemonSessionLifecycle};
+use pa_types::daemon::{DaemonCommand, DaemonSessionLifecycle, TranscriptPage};
 use serde_json::{json, Map, Value};
 use tokio::sync::Mutex;
 
@@ -21,6 +21,9 @@ use super::wire_events::{wire_updates, WireMappingState};
 
 /// The most session files one `session/list` page folds.
 const LIST_PAGE_FILES: u64 = 100;
+
+/// Display rows per `get_messages` page when replaying a stored conversation.
+const HISTORY_PAGE_ROWS: usize = 256;
 
 /// `session/list`: one page of the saved catalog as ACP `SessionInfo`
 /// rows. The cursor is the catalog's own `nextCursor`.
@@ -191,6 +194,13 @@ async fn open_saved_session(
     let summary = create_daemon_session(link, create)
         .await
         .map_err(internal)?;
+    // A busy worker cannot rebind the connection, with or without MCP servers.
+    if summary["isStreaming"] == json!(true) {
+        return Err(super::internal_error(
+            id,
+            "Cannot load a session while the agent is running",
+        ));
+    }
     let active_session_id = summary_str(&summary, "activeSessionId");
     // Loading the session this connection already hosts keeps the binding.
     if active_session_id == bound.active_session_id {
@@ -218,29 +228,41 @@ async fn open_saved_session(
     }
 }
 
-/// The session's stored conversation (`get_messages`).
+/// The session's display transcript (`get_messages`), oldest first. Pages
+/// walk back from the tail the way the TUI pages its transcript, so turns
+/// a compaction summarized out of the model's view still replay.
 async fn fetch_history(
     link: &Arc<DaemonLink>,
     active_session_id: &str,
 ) -> anyhow::Result<Vec<Value>> {
-    let response = link
-        .request(DaemonCommand::GetMessages {
-            id: None,
-            active_session_id: active_session_id.to_string(),
-            page: None,
-            capabilities: None,
-            rest: Map::default(),
-        })
-        .await?;
-    if !response.success {
-        anyhow::bail!(response
-            .error
-            .unwrap_or_else(|| "unknown error".to_string()));
+    let mut pages = Vec::new();
+    let mut before = None;
+    loop {
+        let response = link
+            .request(DaemonCommand::GetMessages {
+                id: None,
+                active_session_id: active_session_id.to_string(),
+                page: Some(TranscriptPage::End {
+                    before,
+                    limit: HISTORY_PAGE_ROWS,
+                }),
+                capabilities: None,
+                rest: Map::default(),
+            })
+            .await?;
+        if !response.success {
+            anyhow::bail!(response
+                .error
+                .unwrap_or_else(|| "unknown error".to_string()));
+        }
+        let data = response.data.unwrap_or(Value::Null);
+        pages.push(data["messages"].as_array().cloned().unwrap_or_default());
+        match data["firstEntryId"].as_str() {
+            Some(first) if data["more"] == json!(true) => before = Some(first.to_string()),
+            _ => break,
+        }
     }
-    Ok(response
-        .data
-        .and_then(|data| data.get("messages").and_then(Value::as_array).cloned())
-        .unwrap_or_default())
+    Ok(pages.into_iter().rev().flatten().collect())
 }
 
 /// The stored conversation as `session/update`s, in order. User text is
