@@ -1,5 +1,7 @@
 use super::*;
 
+type Logged = (pa_ai::utils::log::LogLevel, String, String, Value);
+
 #[tokio::test]
 async fn refinement_row_cannot_broadcast_into_a_replacement_session() {
     let dir = tempfile::tempdir().unwrap();
@@ -146,8 +148,7 @@ async fn fenced_refinement_row_logs_the_dropped_write() {
         core.generation.clone()
     };
     worker.core.lock().unwrap().generation = "moved-generation".to_string();
-    let logged: Arc<std::sync::Mutex<Vec<(pa_ai::utils::log::LogLevel, String, String, Value)>>> =
-        Arc::default();
+    let logged: Arc<std::sync::Mutex<Vec<Logged>>> = Arc::default();
     let sink_logged = Arc::clone(&logged);
     pa_ai::utils::log::set_log_sink(Some(Arc::new(
         move |entry: &pa_ai::utils::log::LogEntry| {
