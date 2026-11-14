@@ -1,0 +1,1 @@
+- ACP `session/load` now replays the full conversation, including turns before a compaction, and is refused while the target agent is running, even with no MCP servers.
