@@ -13,6 +13,7 @@ use super::types::{
     ModelCatalogSettings, QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting,
     UpdateChannel,
 };
+use crate::models::catalog_visibility::invalid_glob;
 use crate::models::CatalogVisibility;
 
 pub const RECENT_MODELS_LIMIT: usize = 20;
@@ -1062,6 +1063,25 @@ fn load_scope(
         other => other,
     };
     let mut settings = from_value_lenient(&migrated);
+    if let Some(catalog) = settings.model_catalog.as_mut() {
+        for patterns in [catalog.allow.as_mut(), catalog.deny.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            patterns.retain(|pattern| match invalid_glob(pattern) {
+                Some(message) => {
+                    errors.push(SettingsError {
+                        scope,
+                        message: format!(
+                            "modelCatalog pattern \"{pattern}\" is not a valid glob and was dropped: {message}"
+                        ),
+                    });
+                    false
+                }
+                None => true,
+            });
+        }
+    }
     if scope == SettingsScope::Project {
         // A repository can supply this file before the user opens it. Keep its
         // document on disk, but never let it select a process, command prefix,
