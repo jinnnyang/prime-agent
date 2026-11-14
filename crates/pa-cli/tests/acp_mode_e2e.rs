@@ -1251,6 +1251,135 @@ fn acp_session_load_refused_by_a_busy_worker_keeps_the_startup_binding() {
 }
 
 #[test]
+fn acp_session_load_refused_by_a_busy_worker_without_mcp_servers() {
+    // The busy refusal does not depend on the request's MCP servers: an
+    // empty list still rebinds the connection, so it is refused too.
+    let home = tempfile::TempDir::new().unwrap();
+    let home_path = home.path().to_path_buf();
+    let socket = home_path.join("daemon.sock");
+    let answer = "a paced answer that keeps the worker busy while another client loads the session, streaming slowly enough to outlast the load";
+    std::fs::write(
+        home_path.join("worker-script.json"),
+        json!({ "engine": "faux", "tokensPerSecond": 2, "responses": [{ "text": answer }] })
+            .to_string(),
+    )
+    .unwrap();
+    let child = daemon_attached_command(&home_path, &socket, &["--mode", "acp"])
+        .spawn()
+        .expect("binary present");
+    let mut first = AcpChild::wrap(child, Some(home), socket.clone());
+    let session_id = initialize_and_new_session(&mut first);
+    let _ = first.request(
+        "session/prompt",
+        &json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": "a slow question" }] }),
+    );
+    first.wait_update("agent_message_chunk", TIMEOUT);
+
+    let child = daemon_attached_command(&home_path, &socket, &["--mode", "acp"])
+        .spawn()
+        .expect("binary present");
+    let mut second = AcpChild::wrap(child, None, socket);
+    let init = second.request("initialize", &initialize_params());
+    let _ = second.wait_response(init, TIMEOUT);
+    let load = second.request(
+        "session/load",
+        &json!({ "sessionId": session_id, "cwd": home_path.display().to_string(), "mcpServers": [] }),
+    );
+    let (load_response, _) = second.wait_response(load, TIMEOUT);
+    assert!(
+        load_response["error"]["data"]["details"]
+            .as_str()
+            .is_some_and(|details| details.contains("while the agent is running")),
+        "{load_response}"
+    );
+    let startup_session_id = new_session(&mut second);
+    assert_ne!(startup_session_id, session_id);
+}
+
+#[test]
+fn acp_session_load_replays_the_full_transcript_across_a_compaction() {
+    // A compaction summarizes the first turn out of the model's view; the
+    // load replays the display transcript, so that turn's user text is
+    // still replayed in order before the response.
+    let home = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(home.path().join(".prime/agent")).expect("agent dir");
+    std::fs::write(
+        home.path().join(".prime/agent/settings.json"),
+        json!({
+            "compaction": {
+                "enabled": true,
+                "reserveTokens": 128_000 - 4_096 - 500,
+                "keepRecentTokens": 10,
+            }
+        })
+        .to_string(),
+    )
+    .expect("write settings.json");
+    let home_path = home.path().to_path_buf();
+    let socket = home_path.join("daemon.sock");
+    std::fs::write(
+        home_path.join("worker-script.json"),
+        json!({
+            "engine": "faux",
+            "contextWindow": 128_000,
+            "maxTokens": 4_096,
+            "responses": [
+                { "text": "turn one reply" },
+                { "text": "turn two reply" },
+                { "text": "the auto summary" },
+            ],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let child = daemon_attached_command(&home_path, &socket, &["--mode", "acp"])
+        .spawn()
+        .expect("binary present");
+    let mut first = AcpChild::wrap(child, Some(home), socket.clone());
+    let session_id = initialize_and_new_session(&mut first);
+    let turn_one = format!("turn one {}", "x".repeat(8_000));
+    let prompt = first.request(
+        "session/prompt",
+        &json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": turn_one }] }),
+    );
+    let (prompt_response, _) = first.wait_response(prompt, TIMEOUT);
+    assert_end_turn(&prompt_response);
+    let prompt = first.request(
+        "session/prompt",
+        &json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": "turn two" }] }),
+    );
+    let (prompt_response, updates) = first.wait_response(prompt, TIMEOUT);
+    assert_end_turn(&prompt_response);
+    assert!(
+        compaction_metas(&updates).iter().any(|meta| meta["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("the auto summary"))),
+        "the compaction ran before the load: {updates:?}"
+    );
+    first.close_stdin();
+    assert!(first.child.wait().expect("the ACP child exits").success());
+
+    let child = daemon_attached_command(&home_path, &socket, &["--mode", "acp"])
+        .spawn()
+        .expect("binary present");
+    let mut second = AcpChild::wrap(child, None, socket);
+    let init = second.request("initialize", &initialize_params());
+    let _ = second.wait_response(init, TIMEOUT);
+    let load = second.request(
+        "session/load",
+        &json!({ "sessionId": session_id, "cwd": home_path.display().to_string(), "mcpServers": [] }),
+    );
+    let (load_response, replay) = second.wait_response(load, TIMEOUT);
+    assert!(load_response.get("result").is_some(), "{load_response}");
+    let replayed_user_text: Vec<&str> = replay
+        .iter()
+        .filter(|frame| frame["params"]["update"]["sessionUpdate"] == "user_message_chunk")
+        .filter_map(|frame| frame["params"]["update"]["content"]["text"].as_str())
+        .collect();
+    assert_eq!(replayed_user_text, [turn_one.as_str(), "turn two"]);
+}
+
+#[test]
 fn acp_session_list_and_load_restore_a_saved_session_in_a_new_process() {
     // The first process's resident session is listed by its prime-agent
     // session id and loads in a second process: the conversation replays
