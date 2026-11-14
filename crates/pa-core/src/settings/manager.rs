@@ -1112,6 +1112,35 @@ mod tests {
     }
 
     #[test]
+    fn invalid_model_catalog_globs_are_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("cwd");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "modelCatalog": { "allow": ["[*-preview"], "deny": ["databricks/*"] } }"#,
+        )
+        .unwrap();
+        let manager = SettingsManager::create(&cwd, &agent_dir);
+        let messages: Vec<&str> = manager
+            .errors()
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("[*-preview"), "{messages:?}");
+        let visibility = manager
+            .get_model_catalog_visibility()
+            .expect("filters kept");
+        assert_eq!(visibility.allow, vec!["[*-preview".to_string()]);
+        assert_eq!(visibility.deny, vec!["databricks/*".to_string()]);
+        assert!(!visibility.keeps("databricks", "dbrx"));
+        assert!(!visibility.keeps("prime-inference", "glm"));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn project_settings_cannot_copy_a_linked_auth_document() {
         let root = tempfile::tempdir().unwrap();
