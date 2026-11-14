@@ -2584,8 +2584,8 @@ fn acp_overflow_recovery_recovers_from_the_live_413_body() {
 
 /// The kernel Python with prime-agent-runtime installed; set
 /// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-/// Without one, the live RLM quiescence lanes below skip (with a note).
-fn kernel_python() -> Option<std::path::PathBuf> {
+/// Without one, the live RLM quiescence lanes below fail loudly.
+fn kernel_python() -> std::path::PathBuf {
     if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
         let explicit = std::path::PathBuf::from(explicit);
         assert!(
@@ -2593,20 +2593,19 @@ fn kernel_python() -> Option<std::path::PathBuf> {
             "PA_E2E_KERNEL_PYTHON {} not found",
             explicit.display()
         );
-        return Some(explicit);
+        return explicit;
     }
     let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
         |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
         |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
     ));
     if candidate.exists() {
-        return Some(candidate);
+        return candidate;
     }
-    eprintln!(
-        "kernel python {} not found; skipping live RLM quiescence e2e",
+    panic!(
+        "kernel python {} not found; run `prime-agent --prime-agent-bootstrap` or set PA_E2E_KERNEL_PYTHON",
         candidate.display()
     );
-    None
 }
 
 /// The namespaced prime-agent payload of one session/update frame.
@@ -2667,9 +2666,7 @@ fn spawn_lane(
 /// seen") drains inside the barrier, between the two.
 #[test]
 fn acp_prompt_settles_after_rlm_quiescence() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
+    let kernel_python = kernel_python();
     let (mut client, session_id, _) = spawn_lane(&["--mode", "acp"], 5_000, &kernel_python);
     let prompt = client.request(
         "session/prompt",
@@ -2727,9 +2724,7 @@ fn acp_prompt_settles_after_rlm_quiescence() {
 /// `[bash-done]` wake is consumed, a quiet turn reports zero.
 #[test]
 fn acp_prompt_reports_outstanding_background_bash_jobs() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
+    let kernel_python = kernel_python();
     let script = json!({
         "engine": "faux",
         "responses": [
@@ -2834,9 +2829,7 @@ fn acp_prompt_reports_outstanding_background_bash_jobs() {
 /// stop sequence, so it is not retested here.
 #[test]
 fn acp_cancel_during_settle_cancels_the_subagents() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
+    let kernel_python = kernel_python();
     let (mut client, session_id, active_session_id) =
         spawn_lane(&["--mode", "acp"], 120_000, &kernel_python);
     let socket = client.socket.clone();
@@ -2880,9 +2873,7 @@ fn acp_cancel_during_settle_cancels_the_subagents() {
 /// cancel a resident session's children.
 #[test]
 fn acp_eof_during_settle_exits_and_leaves_resident_subagents() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
+    let kernel_python = kernel_python();
     let (mut client, session_id, active_session_id) =
         spawn_lane(&["--mode", "acp"], 120_000, &kernel_python);
     let socket = client.socket.clone();
