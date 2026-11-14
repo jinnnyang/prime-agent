@@ -76,6 +76,9 @@ impl SessionAlreadyActiveError {
 #[must_use]
 pub fn canonical_session_path(path: &Path) -> PathBuf {
     let mut missing = Vec::new();
+    // A `..` in the missing tail cancels the name above it. Nothing in the
+    // tail exists, so this is lexical and cannot follow a symlink.
+    let mut pending_parents = 0usize;
     let mut existing = path;
     loop {
         if let Ok(canonical) = existing.canonicalize() {
@@ -86,7 +89,15 @@ pub fn canonical_session_path(path: &Path) -> PathBuf {
         }
         match (existing.parent(), existing.file_name()) {
             (Some(parent), Some(name)) => {
-                missing.push(name);
+                if pending_parents == 0 {
+                    missing.push(name);
+                } else {
+                    pending_parents -= 1;
+                }
+                existing = parent;
+            }
+            (Some(parent), None) if existing.ends_with("..") => {
+                pending_parents += 1;
                 existing = parent;
             }
             _ => return path.to_path_buf(),
@@ -643,6 +654,16 @@ mod tests {
         drop(shared);
         let next = acquire_runtime_session_lease(&path, dir.path()).unwrap();
         assert_eq!(next.session_path, canonical_session_path(&path));
+    }
+
+    #[test]
+    fn canonical_session_path_normalizes_a_dotdot_in_the_missing_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing/../session.jsonl");
+        assert_eq!(
+            canonical_session_path(&path),
+            dir.path().canonicalize().unwrap().join("session.jsonl")
+        );
     }
 
     #[test]
