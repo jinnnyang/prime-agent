@@ -1,1 +1,0 @@
-- The kernel bootstrap no longer selects an extensionless `uv` file on Windows; it uses `uv.exe` from PATH instead.
