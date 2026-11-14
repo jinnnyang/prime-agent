@@ -1,1 +1,0 @@
-- The kernel bootstrap finds the global `~/.local/bin` uv when the working directory is missing or unusable, so the installer pre-warm no longer fails with "uv is required".

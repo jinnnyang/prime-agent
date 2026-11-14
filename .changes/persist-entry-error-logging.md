@@ -1,1 +1,0 @@
-- Session rows that fail to persist are now logged to stderr instead of being silently dropped.

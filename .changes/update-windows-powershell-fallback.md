@@ -1,1 +1,0 @@
-- `prime-agent update` on Windows now falls back to the system PowerShell (`install.ps1` route) when no trusted Git Bash install exists, instead of refusing machines whose Git lives outside the trusted roots.
