@@ -13,6 +13,7 @@ use super::types::{
     ModelCatalogSettings, QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting,
     UpdateChannel,
 };
+use crate::models::catalog_visibility::invalid_glob;
 use crate::models::CatalogVisibility;
 
 pub const RECENT_MODELS_LIMIT: usize = 20;
@@ -1062,6 +1063,25 @@ fn load_scope(
         other => other,
     };
     let mut settings = from_value_lenient(&migrated);
+    if let Some(catalog) = settings.model_catalog.as_mut() {
+        for patterns in [catalog.allow.as_mut(), catalog.deny.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            patterns.retain(|pattern| match invalid_glob(pattern) {
+                Some(message) => {
+                    errors.push(SettingsError {
+                        scope,
+                        message: format!(
+                            "modelCatalog pattern \"{pattern}\" is not a valid glob and was dropped: {message}"
+                        ),
+                    });
+                    false
+                }
+                None => true,
+            });
+        }
+    }
     if scope == SettingsScope::Project {
         // A repository can supply this file before the user opens it. Keep its
         // document on disk, but never let it select a process, command prefix,
@@ -1109,6 +1129,31 @@ mod tests {
             vec!["*-preview".to_string(), "databricks/*".to_string()]
         );
         assert!(visibility.allow.is_empty());
+    }
+
+    #[test]
+    fn invalid_model_catalog_globs_are_rejected_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("cwd");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "modelCatalog": { "allow": ["[*-preview"], "deny": ["databricks/*"] } }"#,
+        )
+        .unwrap();
+        let manager = SettingsManager::create(&cwd, &agent_dir);
+        let messages: Vec<&str> = manager
+            .errors()
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("[*-preview"), "{messages:?}");
+        let visibility = manager.get_model_catalog_visibility().expect("deny kept");
+        assert_eq!(visibility.allow, Vec::<String>::new());
+        assert_eq!(visibility.deny, vec!["databricks/*".to_string()]);
     }
 
     #[test]

@@ -174,6 +174,24 @@ fn matches(pattern: &str, provider: &str, id: &str) -> bool {
     }
 }
 
+/// The compile error of a visibility pattern that [`matches`] cannot use, or
+/// `None` when it is valid. Non-glob patterns never fail.
+pub(crate) fn invalid_glob(pattern: &str) -> Option<String> {
+    let pattern = pattern.trim().to_lowercase();
+    if !pattern.contains(['*', '?', '[']) {
+        return None;
+    }
+    let parts = pattern.rsplit_once('/').map_or_else(
+        || vec![pattern.as_str()],
+        |(provider, id)| vec![provider, id],
+    );
+    parts.into_iter().find_map(|part| {
+        globset::Glob::new(part)
+            .err()
+            .map(|error| error.to_string())
+    })
+}
+
 fn glob_matches(pattern: &str, value: &str) -> bool {
     let pattern = pattern.trim().to_lowercase();
     let Ok(glob) = globset::Glob::new(&pattern) else {

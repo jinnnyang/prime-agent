@@ -1,0 +1,1 @@
+- Invalid `modelCatalog.allow`/`deny` globs are now dropped at settings load with an error naming the pattern, instead of silently hiding or never matching models.
