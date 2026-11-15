@@ -147,6 +147,22 @@ class PublicationTests(unittest.TestCase):
                          {f'release-out/{p.name}' for p in self.out.iterdir()})
         self.assertEqual((self.out / 'SHA256SUMS').read_text(), self.sums)
 
+    def test_the_release_body_carries_the_promote_rendered_sections(self):
+        (self.out / 'nightly-notes.md').write_text(
+            '## What changed since 0.11.0\n\n- A pending bullet.\n')
+        result = self.refresh()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = (self.root / 'release-notes').read_text()
+        self.assertIn('Current build: v0.10.1-beta.10', body)
+        self.assertIn('- A pending bullet.', body)
+
+    def test_a_payload_without_the_rendered_sections_keeps_the_rolling_notice(self):
+        result = self.refresh()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = (self.root / 'release-notes').read_text()
+        self.assertIn('The rolling nightly channel.', body)
+        self.assertNotIn('## What changed since', body)
+
     def test_corrupt_payload_never_publishes(self):
         (self.out / "prime-agent-linux.debug.gz").write_text("corrupt")
         result = self.refresh()
