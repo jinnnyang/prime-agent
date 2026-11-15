@@ -1,0 +1,1 @@
+- The rolling `nightly` release now shows what the beta build contains (the pending changelog bullets) and how to install it (`install-beta.sh` / `install-beta.ps1`, `prime-agent update --nightly`), instead of a fixed four-line notice.
