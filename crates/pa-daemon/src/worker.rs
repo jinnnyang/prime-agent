@@ -921,9 +921,11 @@ pub(crate) fn emit_refinement_event_for_generation(
 ) -> bool {
     let mut core = core.lock().unwrap();
     if expected_generation.is_some_and(|generation| core.generation != generation) {
+        log_dropped_refinement_write("event", review_session_id);
         return false;
     }
     if core.store.as_ref().map(SessionFile::session_id) != Some(review_session_id) {
+        log_dropped_refinement_write("event", review_session_id);
         return false;
     }
     let sequence = core.last_event_sequence + 1;
@@ -943,6 +945,16 @@ pub(crate) fn emit_refinement_event_for_generation(
     let payload = serde_json::to_vec(&outbound).unwrap_or_default();
     events.send(OutboundFrame::session_event(payload));
     true
+}
+
+/// Log a refinement write that the origin session fence refused. The callers
+/// of the `emit_refinement_*` functions may ignore the `bool`; this keeps the
+/// drop visible in the worker's captured stderr log.
+fn log_dropped_refinement_write(kind: &str, review_session_id: &str) {
+    pa_ai::utils::log::get_logger("daemon.refinement").warn(
+        "refinement write dropped: origin session moved",
+        json!({ "kind": kind, "sessionId": review_session_id }),
+    );
 }
 
 /// Record one durable custom row of the background compact-trigger
@@ -973,6 +985,7 @@ pub(crate) fn emit_refinement_row_for_generation(
 ) -> bool {
     let mut core = core.lock().unwrap();
     if expected_generation.is_some_and(|generation| core.generation != generation) {
+        log_dropped_refinement_write("row", review_session_id);
         return false;
     }
     {
@@ -984,6 +997,7 @@ pub(crate) fn emit_refinement_row_for_generation(
                 "autorefine.rows_dropped_session_moved",
                 &serde_json::Value::Null,
             );
+            log_dropped_refinement_write("row", review_session_id);
             return false;
         }
         store.persist_entry_logged(

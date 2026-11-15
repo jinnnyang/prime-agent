@@ -1,5 +1,7 @@
 use super::*;
 
+type Logged = (pa_ai::utils::log::LogLevel, String, String, Value);
+
 #[tokio::test]
 async fn refinement_row_cannot_broadcast_into_a_replacement_session() {
     let dir = tempfile::tempdir().unwrap();
@@ -119,4 +121,68 @@ async fn refinement_row_cannot_broadcast_into_a_replacement_session() {
         .unwrap()
         .entries()
         .is_empty());
+}
+
+#[tokio::test]
+async fn fenced_refinement_row_logs_the_dropped_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let worker = Worker::new(
+        WorkerConfig {
+            socket_path: dir.path().join("worker.sock"),
+            supervisor_socket_path: std::path::PathBuf::new(),
+            token: "token".to_string(),
+            worker_instance_id: String::new(),
+            active_session_id: "original-active".to_string(),
+            agent_dir: dir.path().join("agent"),
+            recovery_journal_path: dir.path().join("recovery.jsonl"),
+            telemetry_disabled: None,
+            script: Some(json!({ "responses": [] })),
+        },
+        None,
+    );
+    let original = SessionFile::create("/tmp", None, 0);
+    let original_id = original.session_id().to_string();
+    let generation = {
+        let mut core = worker.core.lock().unwrap();
+        core.store = Some(original);
+        core.generation.clone()
+    };
+    worker.core.lock().unwrap().generation = "moved-generation".to_string();
+    let logged: Arc<std::sync::Mutex<Vec<Logged>>> = Arc::default();
+    let sink_logged = Arc::clone(&logged);
+    pa_ai::utils::log::set_log_sink(Some(Arc::new(
+        move |entry: &pa_ai::utils::log::LogEntry| {
+            sink_logged.lock().unwrap().push((
+                entry.level,
+                entry.component.clone(),
+                entry.msg.clone(),
+                entry.fields.clone(),
+            ));
+        },
+    )));
+    let message = json!({
+        "role": "custom",
+        "customType": "refinement_outcome",
+        "content": "Refinement complete",
+        "display": true,
+        "details": { "refinementId": "refine-test" },
+    });
+    let accepted = emit_refinement_row_for_generation(
+        &worker.core,
+        &worker.events,
+        &original_id,
+        Some(&generation),
+        &message,
+    );
+    pa_ai::utils::log::set_log_sink(None);
+    assert!(!accepted);
+    assert_eq!(
+        *logged.lock().unwrap(),
+        vec![(
+            pa_ai::utils::log::LogLevel::Warn,
+            "daemon.refinement".to_string(),
+            "refinement write dropped: origin session moved".to_string(),
+            json!({ "kind": "row", "sessionId": original_id }),
+        )]
+    );
 }
