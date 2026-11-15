@@ -1,1 +1,0 @@
-- The kernel resolves the project path the same way whether or not the directory still exists, so a link or junction can no longer hide a repository from the uv and PATH checks.

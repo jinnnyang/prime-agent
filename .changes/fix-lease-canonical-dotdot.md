@@ -1,1 +1,0 @@
-- Fixed session lease keys for paths that go through `..` before the file exists.

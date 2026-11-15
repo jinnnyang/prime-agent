@@ -1,1 +1,0 @@
-- Invalid `modelCatalog.allow`/`deny` globs are now reported as settings errors that name the pattern. An invalid `allow` pattern keeps the catalog hidden until it is fixed; an invalid `deny` pattern hides nothing.
