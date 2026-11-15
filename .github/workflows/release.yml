@@ -1282,6 +1282,17 @@ jobs:
             --version "${GITHUB_REF_NAME#v}" \
             --changelog verification-source/CHANGELOG.md \
             > notes.md
+      # The beta route rides the payload, not a release attach: the rolling
+      # `nightly` release is refreshed by the next job, which never checks
+      # out the source tree.
+      - name: Render the nightly notes (the pending changes + the beta install footer)
+        if: ${{ contains(github.ref_name, '-') }}
+        run: |
+          python3 verification-source/scripts/release/release_notes.py \
+            --nightly \
+            --changelog verification-source/CHANGELOG.md \
+            --changes verification-source/.changes \
+            > release-out/nightly-notes.md
       - name: Attach to GitHub release
         if: ${{ !contains(github.ref_name, '-') }}
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
@@ -1312,6 +1323,7 @@ jobs:
             release-out/*.json
             release-out/install-beta.sh
             release-out/install-beta.ps1
+            release-out/nightly-notes.md
           if-no-files-found: error
 
   # The rolling `nightly` release is the nightly channel's discoverable base:
@@ -1390,6 +1402,21 @@ jobs:
           # rate-limit, and malformed-response errors must not bypass the guard.
           state="$(mktemp -d)"
           trap 'rm -rf "$state"' EXIT
+          # The body: this build's identity stamped at publish time, then the
+          # sections the promote job rendered (the pending changes and the
+          # beta install route). A re-run of a tag cut before the payload
+          # carried them keeps the old one-line notice: re-running an older
+          # beta is an existing, guarded scenario (the newest-wins guard
+          # below), so it must not fail here.
+          {
+            printf 'Current build: %s\n\nSource commit: https://github.com/%s/commit/%s\n\nUpdated: %s\n\n' \
+              "$RELEASE_VERSION" "$GH_REPO" "$built_commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if [ -s release-out/nightly-notes.md ]; then
+              cat release-out/nightly-notes.md
+            else
+              printf 'The rolling nightly channel. beta.json names the current build; older versioned assets may remain.\n'
+            fi
+          } > "$state/notes.md"
           if gh release view nightly --json assets > "$state/release.json"; then
             jq -e '.assets | type == "array" and all(.[]; .name | type == "string")' "$state/release.json" >/dev/null
             jq -r '.assets[].name' "$state/release.json" > "$state/assets"
@@ -1476,7 +1503,7 @@ jobs:
             gh release create nightly \
               --target "$built_commit" \
               --title "nightly" \
-              --notes "The rolling nightly channel (beta builds). Assets are overwritten per -beta* tag; beta.json names the current build." \
+              --notes-file "$state/notes.md" \
               --prerelease \
               release-out/prime-agent-*.tar.gz \
               release-out/prime-agent-*.tgz \
@@ -1492,7 +1519,5 @@ jobs:
           # from both the version-only tag commit and today's main HEAD.
           gh api "repos/${GH_REPO}/git/refs/tags/nightly" --method PATCH \
             -f sha="$built_commit" -F force=true >/dev/null
-          printf 'Current build: %s\n\nSource commit: https://github.com/%s/commit/%s\n\nUpdated: %s\n\nThe rolling nightly channel. beta.json names the current build; older versioned assets may remain.\n' \
-            "$RELEASE_VERSION" "$GH_REPO" "$built_commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$state/notes.md"
           gh release edit nightly --title "nightly ($RELEASE_VERSION)" \
             --notes-file "$state/notes.md" --prerelease --latest=false
