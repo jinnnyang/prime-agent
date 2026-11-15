@@ -1,1 +1,0 @@
-- The kernel bootstrap finds `uv` on PATH when the working directory has vanished, unless a checkout encloses that directory, so the installer no longer reports "uv is required" in that case.

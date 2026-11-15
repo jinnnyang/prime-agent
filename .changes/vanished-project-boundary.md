@@ -1,1 +1,0 @@
-- The kernel environment and the uv search filter PATH the same way whether or not the working directory still exists.

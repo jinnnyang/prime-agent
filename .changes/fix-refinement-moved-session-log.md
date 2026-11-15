@@ -1,1 +1,0 @@
-- Refinement results from a session that was moved or replaced are now logged as dropped, instead of disappearing silently.
