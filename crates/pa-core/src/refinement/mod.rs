@@ -18,6 +18,23 @@ pub const DEFAULT_OVERVIEW_ENTRY_LIMIT: usize = 3;
 pub const DEFAULT_OVERVIEW_REFINEMENT_LIMIT: usize = 10;
 pub const DEFAULT_OVERVIEW_CONTENT_LIMIT: usize = 140;
 
+/// Hard ceiling for the settings-driven digest entry cap: past this the digest
+/// stops fitting any budget, so the value clamps instead of growing.
+pub const MAX_DIGEST_ENTRIES_PER_KIND: usize = 64;
+
+/// Resolve the settings-driven digest entry cap: unset keeps the built-in
+/// default, and an explicit value clamps to `1..=MAX_DIGEST_ENTRIES_PER_KIND`
+/// (a 0 would render an empty digest, which no caller means by "0").
+#[must_use]
+pub fn digest_entries_per_kind(raw: Option<u64>) -> usize {
+    match raw {
+        Some(value) => usize::try_from(value)
+            .unwrap_or(MAX_DIGEST_ENTRIES_PER_KIND)
+            .clamp(1, MAX_DIGEST_ENTRIES_PER_KIND),
+        None => DEFAULT_OVERVIEW_ENTRY_LIMIT,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RefinementKind {
@@ -581,6 +598,20 @@ pub(crate) use compact_text as compact_harness_text;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digest_entries_per_kind_resolves_the_setting_and_clamps() {
+        // Unset keeps the historical default, so an absent settings block
+        // renders byte-identically to every digest written before the setting.
+        assert_eq!(digest_entries_per_kind(None), DEFAULT_OVERVIEW_ENTRY_LIMIT);
+        assert_eq!(digest_entries_per_kind(Some(12)), 12);
+        // 0 would render an empty digest; no caller means that by "0".
+        assert_eq!(digest_entries_per_kind(Some(0)), 1);
+        assert_eq!(
+            digest_entries_per_kind(Some(u64::MAX)),
+            MAX_DIGEST_ENTRIES_PER_KIND
+        );
+    }
 
     fn entry(id: &str, kind: RefinementKind, scope: HarnessScope, content: &str) -> HarnessEntry {
         HarnessEntry {

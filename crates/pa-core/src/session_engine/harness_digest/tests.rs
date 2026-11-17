@@ -9,6 +9,7 @@ use serde_json::Value;
 fn empty_state_digest_renders_placeholder() {
     let tmp = tempfile::tempdir().unwrap();
     let context = HarnessDigestContext {
+        entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
         global_dir: tmp.path().join("harness"),
         local_dir: None,
         include_ipython: true,
@@ -327,6 +328,7 @@ async fn placement_rig(
         std::sync::Arc::new(tokio::sync::Mutex::new(session)),
         Vec::new(),
         Some(HarnessDigestContext {
+            entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
             global_dir,
             local_dir: Some(local_dir),
             include_ipython: false,

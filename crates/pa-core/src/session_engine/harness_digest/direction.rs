@@ -114,6 +114,7 @@ async fn direction_rig(
         std::sync::Arc::new(tokio::sync::Mutex::new(session)),
         Vec::new(),
         Some(HarnessDigestContext {
+            entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
             global_dir: tmp.path().join("harness"),
             local_dir: Some(
                 tmp.path()

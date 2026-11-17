@@ -117,6 +117,17 @@ pub struct BranchSummarySettings {
     pub skip_prompt: Option<bool>,
 }
 
+/// Harness digest limits (`harness` in settings.json). Unset fields keep the
+/// built-in defaults, so an absent block renders exactly like before.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessSettings {
+    /// Entries listed per kind in the harness digest before the `+N more`
+    /// line. Unset keeps [`crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT`];
+    /// values clamp to `1..=crate::refinement::MAX_DIGEST_ENTRIES_PER_KIND`.
+    pub digest_entries_per_kind: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoRefineSettings {
@@ -323,6 +334,7 @@ pub struct Settings {
     pub theme: Option<String>,
     pub compaction: Option<CompactionSettings>,
     pub auto_refine: Option<AutoRefineSettings>,
+    pub harness: Option<HarnessSettings>,
     /// Master switch for harness creation and context loading; unset preserves enabled behavior.
     pub harness_refinements: Option<bool>,
     pub agent_traces: Option<AgentTracesSettings>,

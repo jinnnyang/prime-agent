@@ -1,0 +1,1 @@
+- Added the `harness.digestEntriesPerKind` setting, so the continual-harness digest can list more than three memories per kind instead of hiding the rest behind a `+N more` line.
