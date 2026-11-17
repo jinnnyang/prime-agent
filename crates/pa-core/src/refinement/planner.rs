@@ -7,7 +7,8 @@ use super::{
     RefinementAction, RefinementKind,
 };
 
-pub const REFINEMENT_SYSTEM_PROMPT: &str = "You are Prime Agent's /refine continual harness subsystem.\n\nYour job is to improve the editable continual harness state from the current trajectory.\nThis is similar in spirit to context compaction, but instead of summarizing the\nconversation you emit precise Create, Update, or Delete edits to reusable state.\nThe continual harness is the persistent, editable set of prompt notes, memories,\nskills, and subagent specs that lets Prime Agent improve reusable behavior\noutside the token history.\nUse \"continual harness\" for that persistent artifact layer; keep \"RLM\" for the\nruntime, Python REPL kernel, and native call interface that executes those artifacts.\n\nContinual harness components:\n- prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.\n- memory: durable facts, decisions, failures, preferences, and outcomes.\n- skill: installed Python REPL skill. Skill create/update edits MUST include a `reference` object with `{\"type\":\"python\"}`, a Python import, and a callable or call pattern; they also MUST include an `arguments` object describing accepted inputs, required fields, defaults, and constraints. Use `{}` for `arguments` only when the Python callable truly needs no external inputs. Include the RLM-native call form `await <skill_import>(...)`.\n- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: compose a concise task prompt and spawn with `handle = await rlm.spawn(\"sub-task\", name=\"worker\")`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role=\"parent\")`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role=\"child\", receiver_name=handle.name)` for follow-ups. Do not invent wrappers like `run_subagent(...)`.\n- factory: declarative state-machine workflow specs of subagent states. The spec lives in `arguments.machine` (the original DAG sugar in `arguments.dag` compiles to machine form; pass exactly one form). The kernel validator (`rlm.factory`) enforces the full machine semantics at write time: run a stored factory with `await rlm.factory.run('<id>')`, watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, and resume an escalate-paused run with `await rlm.factory.resume(run_id)`.\n\nScope and persistence policy:\n- The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.\n- A caller may explicitly request global refinement. Global edits must be stable cross-session lessons, durable user preferences, reusable skills/subagents, or tool/environment facts that should affect future sessions.\n- Entry ids in the harness overview may carry a display-only `local:` or `global:` prefix. Always use the bare id (no prefix) in edits.\n- All edits in one refinement apply only to the requested scope's store. During a local refinement, global entries are read-only context: never propose update or delete edits for them; create a local entry instead when a session-specific override is genuinely needed.\n- Project/workspace-specific lessons may be persisted globally only when the title, path, or content explicitly names the project/workspace and the lesson is likely to be reused in future sessions for that project. Prefer local edits when the lesson only belongs in the current conversation.\n- Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.\n- Create or update the smallest relevant component: repeated delegation roles should become subagent specs, repeated procedures should become skills, durable facts/preferences should become memories, and narrow behavioral policies should become prompt addendums.\n- When an edit is persisted, include metadata such as `{\"scope\":\"local\"}` or `{\"scope\":\"global\"}` when that helps future review understand the intended blast radius.\n\nUse the trajectory, current continual harness state, and prior refinement history. Prefer\nsmall evidence-backed edits. If prior refinements caused issues, rollback or\nreplace the faulty editable entries. Never edit source files directly. Output\nJSON only with this exact shape:\n\n{\n  \"summary\": \"one sentence\",\n  \"rationale\": \"why these edits are justified by trajectory evidence\",\n  \"expectedOutcome\": \"what should improve and how to validate it\",\n  \"edits\": [\n    {\n      \"action\": \"create|update|delete\",\n      \"kind\": \"prompt|memory|skill|subagent|factory\",\n      \"id\": \"stable id for update/delete, optional for create\",\n      \"title\": \"required for create/update except delete\",\n      \"content\": \"required for create/update except delete\",\n      \"path\": \"optional grouping path\",\n      \"reference\": {\"type\": \"python\", \"import\": \"package.module\", \"callable\": \"function_name\", \"call_pattern\": \"await function_name(...)\"},\n      \"arguments\": {\"name\": {\"type\": \"string\", \"required\": true, \"description\": \"accepted input\"}},\n      \"metadata\": {},\n      \"reason\": \"why this edit is useful\"\n    }\n  ]\n}";
+pub const REFINEMENT_SYSTEM_PROMPT: &str = "You are Prime Agent's /refine continual harness subsystem.\n\nYour job is to improve the editable continual harness state from the current trajectory.\nThis is similar in spirit to context compaction, but instead of summarizing the\nconversation you emit precise Create, Update, or Delete edits to reusable state.\nThe continual harness is the persistent, editable set of prompt notes, memories,\nskills, and subagent specs that lets Prime Agent improve reusable behavior\noutside the token history.\nUse \"continual harness\" for that persistent artifact layer; keep \"RLM\" for the\nruntime, Python REPL kernel, and native call interface that executes those artifacts.\n\nContinual harness components:\n- prompt: supplemental prompt notes only. The base system prompt is immutable and MUST NOT be rewritten.\n- memory: durable facts, decisions, failures, preferences, and outcomes. Memory is PAGE-BACKED: each memory edit names a page under <agent dir>/memory/pages/<type>/ and carries these metadata keys — `type` (`world` = facts independent of this machine/repo/version, `model` = stable preference/rule/standing answer, `observation` = induced from at least two experiences and carrying evidence, `experience` = one session's record), `hook` (the 'read when' line the digest index shows, so the page is findable without reading it), and `status`. Put the conclusion in the first sentence of `content`.
+  Your memory work is OPTIMIZATION, not compression: distill (drop repeats, keep conclusion + trigger + evidence pointer), relate (link to existing pages), and abstract (a new `model` page derived from at least two sources). Compression, merging, promotion from experience to observation, and deletion belong to the scheduled dream pass, which reads the whole page store; do not attempt them here, and never delete a page. Evidence is something you gather with the search, query, and code tools — cite it with a resolvable reference (command + date, session id + turn, file + line, or commit sha) in `evidence`.\n- skill: installed Python REPL skill. Skill create/update edits MUST include a `reference` object with `{\"type\":\"python\"}`, a Python import, and a callable or call pattern; they also MUST include an `arguments` object describing accepted inputs, required fields, defaults, and constraints. Use `{}` for `arguments` only when the Python callable truly needs no external inputs. Include the RLM-native call form `await <skill_import>(...)`.\n- subagent: reusable delegation specs, including purpose, instructions, and when to invoke. Include the RLM-native call form: compose a concise task prompt and spawn with `handle = await rlm.spawn(\"sub-task\", name=\"worker\")`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role=\"parent\")`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role=\"child\", receiver_name=handle.name)` for follow-ups. Do not invent wrappers like `run_subagent(...)`.\n- factory: declarative state-machine workflow specs of subagent states. The spec lives in `arguments.machine` (the original DAG sugar in `arguments.dag` compiles to machine form; pass exactly one form). The kernel validator (`rlm.factory`) enforces the full machine semantics at write time: run a stored factory with `await rlm.factory.run('<id>')`, watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, and resume an escalate-paused run with `await rlm.factory.resume(run_id)`.\n\nScope and persistence policy:\n- The default editable continual harness store is local to the current Prime Agent session. Use it for session-specific progress, active task state, current-run coordination notes, temporary blockers, and project facts that should not affect other sessions.\n- A caller may explicitly request global refinement. Global edits must be stable cross-session lessons, durable user preferences, reusable skills/subagents, or tool/environment facts that should affect future sessions.\n- Entry ids in the harness overview may carry a display-only `local:` or `global:` prefix. Always use the bare id (no prefix) in edits.\n- All edits in one refinement apply only to the requested scope's store. During a local refinement, global entries are read-only context: never propose update or delete edits for them; create a local entry instead when a session-specific override is genuinely needed.\n- Project/workspace-specific lessons may be persisted globally only when the title, path, or content explicitly names the project/workspace and the lesson is likely to be reused in future sessions for that project. Prefer local edits when the lesson only belongs in the current conversation.\n- Use memory for declarative facts and preferences, skill for repeatable procedures exposed as Python calls, prompt for narrow behavioral policy addendums, and subagent for reusable delegation roles.\n- Create or update the smallest relevant component: repeated delegation roles should become subagent specs, repeated procedures should become skills, durable facts/preferences should become memories, and narrow behavioral policies should become prompt addendums.\n- When an edit is persisted, include metadata such as `{\"scope\":\"local\"}` or `{\"scope\":\"global\"}` when that helps future review understand the intended blast radius.\n\nUse the trajectory, current continual harness state, and prior refinement history. Prefer\nsmall evidence-backed edits. If prior refinements caused issues, rollback or\nreplace the faulty editable entries. Never edit source files directly. Output\nJSON only with this exact shape:\n\n{\n  \"summary\": \"one sentence\",\n  \"rationale\": \"why these edits are justified by trajectory evidence\",\n  \"expectedOutcome\": \"what should improve and how to validate it\",\n  \"edits\": [\n    {\n      \"action\": \"create|update|delete\",\n      \"kind\": \"prompt|memory|skill|subagent|factory\",\n      \"id\": \"stable id for update/delete, optional for create\",\n      \"title\": \"required for create/update except delete\",\n      \"content\": \"required for create/update except delete\",\n      \"path\": \"optional grouping path\",\n      \"reference\": {\"type\": \"python\", \"import\": \"package.module\", \"callable\": \"function_name\", \"call_pattern\": \"await function_name(...)\"},\n      \"arguments\": {\"name\": {\"type\": \"string\", \"required\": true, \"description\": \"accepted input\"}},\n      \"metadata\": {},\n      \"reason\": \"why this edit is useful\"\n    }\n  ]\n}";
 
 pub const AUTO_REFINE_REVIEW_SYSTEM_PROMPT: &str = "You are Prime Agent's automatic /refine review gate.\n\nDecide whether this checkpoint should run /refine. Auto /refine writes local continual harness state by default, so approve when the trajectory contains evidence useful to this session's future turns.\nReject one-off noise, unsupported hypotheses, and transient tool outputs. Ask for global refinement only for durable cross-session lessons or explicitly project-qualified lessons likely to be reused in future sessions.\n\nReturn JSON only:\n{\n  \"shouldRefine\": true|false,\n  \"rationale\": \"short reason\",\n  \"instructions\": \"optional concise instructions for /refine if shouldRefine is true\"\n}";
 
@@ -300,6 +301,10 @@ pub struct ApplyOptions {
     /// same gate the kernel-side factory writers raise
     /// (`rlm.factory.require_factory_enabled`).
     pub factory_enabled: bool,
+    /// Page-backed memory: when set, `memory` edits write pages under this agent
+    /// directory instead of entries in the state file. `None` keeps the legacy
+    /// entry behaviour (and every existing caller byte-identical).
+    pub pages_dir: Option<std::path::PathBuf>,
 }
 
 /// Apply a proposal to the state (mutating entries and recording the event).
@@ -351,6 +356,59 @@ pub fn apply_refinement_proposal(
             continue;
         }
         let action = edit.action.unwrap();
+        if let (Some(agent_dir), RefinementKind::Memory) = (options.pages_dir.as_deref(), kind) {
+            let mut row = super::AppliedRefinementEdit::planned(edit, action, kind, id.clone());
+            let metadata = edit.metadata.clone().unwrap_or_default();
+            let page_type = metadata
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("observation")
+                .to_string();
+            let hook = metadata
+                .get("hook")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            let status = metadata
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("active")
+                .to_string();
+            let today = crate::cron::store::iso_from_millis(crate::cron::store::now_millis());
+            let date = today.get(..10).unwrap_or(today.as_str()).to_string();
+            let outcome = if action == RefinementAction::Delete {
+                crate::memory::archive_page(agent_dir, &id, &date).map(|removed| {
+                    if removed {
+                        Ok(())
+                    } else {
+                        Err(format!("memory page {id:?} not found"))
+                    }
+                })
+            } else {
+                {
+                    let title = edit.title.clone().unwrap_or_else(|| id.clone());
+                    let body = edit.content.clone().unwrap_or_default();
+                    crate::memory::write_page(&crate::memory::PageWrite {
+                        agent_dir,
+                        slug: &id,
+                        kind: &page_type,
+                        title: &title,
+                        hook: hook.as_deref(),
+                        status: &status,
+                        body: &body,
+                        updated: &date,
+                    })
+                    .map(|_| Ok(()))
+                }
+            };
+            match outcome {
+                Ok(Ok(())) => row.applied = true,
+                Ok(Err(error)) => row.error = Some(error),
+                Err(error) => row.error = Some(error.to_string()),
+            }
+            applied_edits.push(row);
+            proposal_modified_keys.insert(format!("{}:{id}", kind_name(kind)));
+            continue;
+        }
         let records = state.entries.get_mut(&kind).unwrap();
         let before = records.get(&id).cloned();
         let entry_key = format!("{}:{id}", kind_name(kind));
@@ -648,6 +706,59 @@ mod tests {
     }
 
     #[test]
+    fn memory_edits_write_pages_instead_of_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        let mut state = crate::refinement::empty_harness_state();
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("type".to_string(), serde_json::json!("observation"));
+        metadata.insert(
+            "hook".to_string(),
+            serde_json::json!("when cargo test is red"),
+        );
+        let proposal = RefinementProposal {
+            summary: "s".to_string(),
+            rationale: "r".to_string(),
+            expected_outcome: "e".to_string(),
+            edits: vec![RefinementEdit {
+                action: Some(RefinementAction::Create),
+                kind: Some(RefinementKind::Memory),
+                id: Some("cargo_baseline".to_string()),
+                title: Some("cargo baseline".to_string()),
+                content: Some("the pre-failure set is ~99".to_string()),
+                path: None,
+                reference: None,
+                arguments: None,
+                metadata: Some(metadata),
+                reason: Some("repeated".to_string()),
+            }],
+        };
+        let result = apply_refinement_proposal(
+            &mut state,
+            &proposal,
+            ApplyOptions {
+                pages_dir: Some(agent.to_path_buf()),
+                id: "r-pages".to_string(),
+                rollback_of: None,
+                scope: Some(HarnessScope::Global),
+                baseline_state: None,
+                factory_enabled: false,
+            },
+        );
+        assert!(
+            result.applied_edits[0].applied,
+            "{:?}",
+            result.applied_edits[0].error
+        );
+        assert!(state.entries[&RefinementKind::Memory].is_empty());
+        let pages = crate::memory::load_pages(agent);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].slug, "cargo_baseline");
+        assert_eq!(pages[0].kind, "observation");
+        assert_eq!(pages[0].hook.as_deref(), Some("when cargo test is red"));
+    }
+
+    #[test]
     fn json_extraction_diagnoses_truncation() {
         let parsed = parse_proposal(r#"{"summary":"ok","edits":[]}"#).unwrap();
         assert_eq!(parsed.summary, "ok");
@@ -806,6 +917,7 @@ mod tests {
             &mut state,
             &proposal,
             ApplyOptions {
+                pages_dir: None,
                 id: "r1".to_string(),
                 rollback_of: None,
                 scope: Some(HarnessScope::Local),
@@ -828,6 +940,7 @@ mod tests {
                 edits: vec![create_memory_edit("m1", "Fact", "again")],
             },
             ApplyOptions {
+                pages_dir: None,
                 id: "r2".to_string(),
                 rollback_of: None,
                 scope: None,
@@ -851,6 +964,7 @@ mod tests {
                 edits: vec![update_edit],
             },
             ApplyOptions {
+                pages_dir: None,
                 id: "r3".to_string(),
                 rollback_of: None,
                 scope: None,
@@ -864,6 +978,7 @@ mod tests {
             &mut state,
             &rollback,
             ApplyOptions {
+                pages_dir: None,
                 id: "r4".to_string(),
                 rollback_of: Some("r1".to_string()),
                 scope: None,
@@ -908,6 +1023,7 @@ mod tests {
             &mut state,
             &proposal(vec![factory_edit(RefinementAction::Create, "sweep")]),
             ApplyOptions {
+                pages_dir: None,
                 id: "r1".to_string(),
                 rollback_of: None,
                 scope: Some(HarnessScope::Local),
@@ -949,6 +1065,7 @@ mod tests {
             &mut state,
             &proposal(vec![factory_edit(RefinementAction::Update, "sweep")]),
             ApplyOptions {
+                pages_dir: None,
                 id: "r2".to_string(),
                 rollback_of: None,
                 scope: None,
@@ -971,6 +1088,7 @@ mod tests {
                 edit
             }]),
             ApplyOptions {
+                pages_dir: None,
                 id: "r3".to_string(),
                 rollback_of: None,
                 scope: None,
@@ -1008,6 +1126,7 @@ mod tests {
                 }],
             },
             ApplyOptions {
+                pages_dir: None,
                 id: "r1".to_string(),
                 rollback_of: None,
                 scope: Some(HarnessScope::Local),

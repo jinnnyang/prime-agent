@@ -611,6 +611,11 @@ pub(crate) async fn commit_refinement(
         }
         None => false,
     };
+    // Memory pages live under the agent dir and are global by nature: a
+    // local-scope refinement must not touch them.
+    let pages_dir = agent_dir
+        .filter(|_| target_scope == HarnessScope::Global)
+        .map(std::path::Path::to_path_buf);
     let (mut result, state_path) = tokio::task::spawn_blocking(move || {
         // The apply-time recheck: a toggle-off during the (slow) planning
         // request discards the plan here — after the lock, before any load,
@@ -626,6 +631,7 @@ pub(crate) async fn commit_refinement(
             &core_options,
             Some(baseline_state),
             factory_enabled,
+            pages_dir.as_deref(),
         );
         lock.ensure_owned()?;
         let state_path = crate::refinement::save_harness_state(&target_dir, &state)?;

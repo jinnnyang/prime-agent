@@ -12,6 +12,7 @@ use super::{
 };
 use pa_types::ai::{AssistantMessage, StopReason};
 use pa_types::session::AgentMessage;
+use std::path::Path;
 
 #[derive(Debug, Default, Clone)]
 pub struct RefineOptions {
@@ -307,6 +308,7 @@ pub fn apply_refinement_plan(
     options: &RefineOptions,
     baseline_state: Option<HarnessState>,
     factory_enabled: bool,
+    pages_dir: Option<&Path>,
 ) -> RefinementResult {
     let scope = plan.rollback_scope.unwrap_or(if options.global {
         HarnessScope::Global
@@ -322,6 +324,7 @@ pub fn apply_refinement_plan(
             scope: Some(scope),
             baseline_state,
             factory_enabled,
+            pages_dir: pages_dir.map(Path::to_path_buf),
         },
     )
 }
@@ -606,6 +609,7 @@ mod tests {
                 ..Default::default()
             },
             ApplyOptions {
+                pages_dir: None,
                 id: "refine_target".to_string(),
                 rollback_of: None,
                 scope: Some(HarnessScope::Local),
