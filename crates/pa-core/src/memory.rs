@@ -158,6 +158,8 @@ pub struct PageWrite<'a> {
     pub hook: Option<&'a str>,
     pub status: &'a str,
     pub body: &'a str,
+    /// ISO date the write happened; the index shows `updated` as freshness.
+    pub updated: &'a str,
 }
 
 /// Where a page with this slug already lives, whatever its type directory.
@@ -205,7 +207,7 @@ pub fn find_page(agent_dir: &Path, slug: &str) -> Option<PathBuf> {
 /// # Errors
 ///
 /// Propagates the directory and file failures; an unknown type is an error too.
-pub fn write_page(write: PageWrite<'_>) -> std::io::Result<PathBuf> {
+pub fn write_page(write: &PageWrite<'_>) -> std::io::Result<PathBuf> {
     if !MEMORY_TYPES.contains(&write.kind) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -224,6 +226,7 @@ pub fn write_page(write: PageWrite<'_>) -> std::io::Result<PathBuf> {
     updates.insert("type", write.kind.to_string());
     updates.insert("title", yaml_scalar(write.title));
     updates.insert("status", write.status.to_string());
+    updates.insert("updated", write.updated.to_string());
     if let Some(hook) = write.hook {
         updates.insert("hook", yaml_scalar(hook));
     }
@@ -255,6 +258,8 @@ pub fn write_page(write: PageWrite<'_>) -> std::io::Result<PathBuf> {
 ///
 /// Propagates the move and append failures.
 pub fn archive_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Result<bool> {
+    use std::fmt::Write as _;
+
     let Some(path) = find_page(agent_dir, slug) else {
         return Ok(false);
     };
@@ -284,7 +289,7 @@ pub fn archive_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Resul
     if existing.is_empty() {
         existing.push_str("# Archive\n\n");
     }
-    existing.push_str(&format!("- {slug} — {title} (archived {today})\n"));
+    let _ = writeln!(existing, "- {slug} — {title} (archived {today})");
     std::fs::write(&log, existing)?;
     Ok(true)
 }
@@ -607,8 +612,6 @@ mod tests {
 
     #[test]
     fn write_page_keeps_fields_the_caller_omits() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent = dir.path();
         fn write<'a>(agent: &'a Path, hook: Option<&'a str>, body: &'a str) -> PageWrite<'a> {
             PageWrite {
                 agent_dir: agent,
@@ -618,9 +621,12 @@ mod tests {
                 hook,
                 status: "active",
                 body,
+                updated: "2026-11-17",
             }
         }
-        let path = write_page(write(agent, Some("when keeping"), "first body")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        let path = write_page(&write(agent, Some("when keeping"), "first body")).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("hook: \"when keeping\""));
         // A field the writer never sets (evidence) survives a later write.
@@ -629,7 +635,7 @@ mod tests {
             "status: active\nevidence:\n  - kind: command\n    ref: \"cargo test\"",
         );
         std::fs::write(&path, with_evidence).unwrap();
-        let path = write_page(write(agent, None, "second body")).unwrap();
+        let path = write_page(&write(agent, None, "second body")).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("kind: command"), "{text}");
         assert!(text.contains("hook: \"when keeping\""), "{text}");
@@ -641,7 +647,7 @@ mod tests {
     fn archive_page_moves_the_file_and_leaves_a_tombstone() {
         let dir = tempfile::tempdir().unwrap();
         let agent = dir.path();
-        write_page(PageWrite {
+        write_page(&PageWrite {
             agent_dir: agent,
             slug: "gone",
             kind: "model",
@@ -649,6 +655,7 @@ mod tests {
             hook: None,
             status: "active",
             body: "body",
+            updated: "2026-11-17",
         })
         .unwrap();
         assert!(archive_page(agent, "gone", "2026-11-17").unwrap());
