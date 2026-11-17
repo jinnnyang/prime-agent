@@ -146,6 +146,193 @@ fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
     Some((frontmatter, body))
 }
 
+/// One page write: the host half of the page store (the kernel writes through
+/// `rlm.harness`, the refine planner writes through here).
+#[derive(Debug, Clone)]
+pub struct PageWrite<'a> {
+    pub agent_dir: &'a Path,
+    pub slug: &'a str,
+    /// One of [`MEMORY_TYPES`].
+    pub kind: &'a str,
+    pub title: &'a str,
+    pub hook: Option<&'a str>,
+    pub status: &'a str,
+    pub body: &'a str,
+}
+
+/// Where a page with this slug already lives, whatever its type directory.
+#[must_use]
+pub fn find_page(agent_dir: &Path, slug: &str) -> Option<PathBuf> {
+    let root = pages_dir(agent_dir);
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name != "_entities") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if path.extension().is_some_and(|ext| ext == "md") {
+                let matches = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| split_frontmatter(&text).map(|(fm, _)| fm.to_string()))
+                    .and_then(|fm| {
+                        serde_yaml::from_str::<serde_yaml::Value>(&fm)
+                            .ok()
+                            .and_then(|value| {
+                                value
+                                    .get("slug")
+                                    .and_then(serde_yaml::Value::as_str)
+                                    .map(str::to_string)
+                            })
+                    });
+                if matches.as_deref() == Some(slug) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Write a page, keeping any frontmatter field the caller does not set.
+///
+/// # Errors
+///
+/// Propagates the directory and file failures; an unknown type is an error too.
+pub fn write_page(write: PageWrite<'_>) -> std::io::Result<PathBuf> {
+    if !MEMORY_TYPES.contains(&write.kind) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unknown memory type {:?}", write.kind),
+        ));
+    }
+    let existing = find_page(write.agent_dir, write.slug);
+    let block = existing
+        .as_deref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| split_frontmatter(&text).map(|(fm, _)| fm.to_string()))
+        .map(|fm| fm.lines().map(str::to_string).collect::<Vec<String>>())
+        .unwrap_or_default();
+    let mut updates: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
+    updates.insert("slug", yaml_scalar(write.slug));
+    updates.insert("type", write.kind.to_string());
+    updates.insert("title", yaml_scalar(write.title));
+    updates.insert("status", write.status.to_string());
+    if let Some(hook) = write.hook {
+        updates.insert("hook", yaml_scalar(hook));
+    }
+    let lines = merge_frontmatter(&block, &updates);
+    let mut text = String::from("---\n");
+    text.push_str(&lines.join("\n"));
+    text.push_str("\n---\n\n");
+    text.push_str(write.body.trim());
+    text.push('\n');
+    let target = pages_dir(write.agent_dir)
+        .join(write.kind)
+        .join(format!("{}.md", write.slug));
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&target, text)?;
+    if let Some(previous) = existing {
+        if previous != target {
+            let _ = std::fs::remove_file(previous);
+        }
+    }
+    Ok(target)
+}
+
+/// Archive a page instead of unlinking it and leave a tombstone line, so a
+/// mistaken removal is reversible and the next pass does not recreate it.
+///
+/// # Errors
+///
+/// Propagates the move and append failures.
+pub fn archive_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Result<bool> {
+    let Some(path) = find_page(agent_dir, slug) else {
+        return Ok(false);
+    };
+    let title = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| split_frontmatter(&text).map(|(fm, _)| fm.to_string()))
+        .and_then(|fm| {
+            serde_yaml::from_str::<serde_yaml::Value>(&fm)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("title")
+                        .and_then(serde_yaml::Value::as_str)
+                        .map(str::to_string)
+                })
+        })
+        .unwrap_or_else(|| slug.to_string());
+    let archive = memory_dir(agent_dir).join("archive");
+    std::fs::create_dir_all(&archive)?;
+    let name = path.file_name().map_or_else(
+        || format!("{slug}.md"),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    std::fs::rename(&path, archive.join(name))?;
+    let log = memory_dir(agent_dir).join("_archive.md");
+    let mut existing = std::fs::read_to_string(&log).unwrap_or_default();
+    if existing.is_empty() {
+        existing.push_str("# Archive\n\n");
+    }
+    existing.push_str(&format!("- {slug} — {title} (archived {today})\n"));
+    std::fs::write(&log, existing)?;
+    Ok(true)
+}
+
+/// Rewrite the given top-level keys and keep every other line verbatim: nested
+/// blocks (`evidence:`, `relations:`, `history:`) belong to their parent key and
+/// survive an edit that does not touch it.
+fn merge_frontmatter(
+    block: &[String],
+    updates: &std::collections::BTreeMap<&str, String>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut written: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut skip_children = false;
+    for line in block {
+        let nested = line.starts_with(' ') || line.starts_with('\t') || line.starts_with('-');
+        if nested {
+            if !skip_children {
+                out.push(line.clone());
+            }
+            continue;
+        }
+        let Some((key, _)) = line.split_once(':') else {
+            out.push(line.clone());
+            continue;
+        };
+        let key = key.trim();
+        if let Some(value) = updates.get(key) {
+            skip_children = true;
+            out.push(format!("{key}: {value}"));
+            written.insert(key);
+            continue;
+        }
+        skip_children = false;
+        out.push(line.clone());
+    }
+    for (key, value) in updates {
+        if !written.contains(*key) {
+            out.push(format!("{key}: {value}"));
+        }
+    }
+    out
+}
+
+fn yaml_scalar(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// A render of the pages as the model-facing index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryIndex {
@@ -416,6 +603,59 @@ mod tests {
         assert!(index.text.contains("## observation (1)"), "{}", index.text);
         assert!(index.text.contains("## disputed (1)"), "{}", index.text);
         assert!(index.text.contains("contradicted; read before relying"));
+    }
+
+    #[test]
+    fn write_page_keeps_fields_the_caller_omits() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        fn write<'a>(agent: &'a Path, hook: Option<&'a str>, body: &'a str) -> PageWrite<'a> {
+            PageWrite {
+                agent_dir: agent,
+                slug: "keep",
+                kind: "observation",
+                title: "Keep",
+                hook,
+                status: "active",
+                body,
+            }
+        }
+        let path = write_page(write(agent, Some("when keeping"), "first body")).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("hook: \"when keeping\""));
+        // A field the writer never sets (evidence) survives a later write.
+        let with_evidence = text.replace(
+            "status: active",
+            "status: active\nevidence:\n  - kind: command\n    ref: \"cargo test\"",
+        );
+        std::fs::write(&path, with_evidence).unwrap();
+        let path = write_page(write(agent, None, "second body")).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("kind: command"), "{text}");
+        assert!(text.contains("hook: \"when keeping\""), "{text}");
+        assert!(text.contains("second body"), "{text}");
+        assert_eq!(text.matches("slug:").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn archive_page_moves_the_file_and_leaves_a_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        write_page(PageWrite {
+            agent_dir: agent,
+            slug: "gone",
+            kind: "model",
+            title: "Gone",
+            hook: None,
+            status: "active",
+            body: "body",
+        })
+        .unwrap();
+        assert!(archive_page(agent, "gone", "2026-11-17").unwrap());
+        assert!(load_pages(agent).is_empty());
+        let log = std::fs::read_to_string(memory_dir(agent).join("_archive.md")).unwrap();
+        assert!(log.contains("gone — Gone (archived 2026-11-17)"), "{log}");
+        assert!(!archive_page(agent, "gone", "2026-11-17").unwrap());
     }
 
     #[test]
