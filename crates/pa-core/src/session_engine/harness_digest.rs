@@ -23,6 +23,9 @@ mod direction;
 /// interfaces the digest may reference.
 #[derive(Debug, Clone)]
 pub struct HarnessDigestContext {
+    /// Entries listed per kind before the `+N more` line (settings-driven,
+    /// resolved through [`crate::refinement::digest_entries_per_kind`]).
+    pub entries_per_kind: usize,
     /// Global harness state directory (`<agent dir>/harness`).
     pub global_dir: PathBuf,
     /// Session-local harness state directory (session artifact dir), when the
@@ -92,6 +95,7 @@ fn render_digest_with_fingerprint(
         include_ipython_examples: context.include_ipython,
         include_shell_examples: context.include_shell_examples,
         include_refine_examples: context.include_ipython && context.include_refine,
+        digest_entries_per_kind: context.entries_per_kind,
     };
     let digest = format_harness_state_for_prompt(
         &merged,
@@ -100,6 +104,7 @@ fn render_digest_with_fingerprint(
             include_shell_examples: context.include_shell_examples,
             include_refine_examples: Some(render_flags.include_refine_examples),
             query_terms: Some(query_terms),
+            max_entries_per_kind: Some(context.entries_per_kind),
             ..Default::default()
         },
     );

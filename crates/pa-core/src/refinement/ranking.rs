@@ -372,7 +372,7 @@ pub fn format_harness_state_for_prompt(
 /// Bump when the fingerprinted material or its canonical serialization
 /// changes, so fingerprints minted under different versions never compare
 /// equal.
-pub const HARNESS_DIGEST_FINGERPRINT_VERSION: u32 = 1;
+pub const HARNESS_DIGEST_FINGERPRINT_VERSION: u32 = 2;
 
 /// The render flags the digest actually reads: the relevance query terms
 /// are excluded — the digest stays frozen per delivery.
@@ -381,6 +381,9 @@ pub struct HarnessDigestRenderFlags {
     pub include_ipython_examples: bool,
     pub include_shell_examples: bool,
     pub include_refine_examples: bool,
+    /// Entries listed per kind before the `+N more` line: a cap change renders
+    /// a different digest, so the fingerprint covers it.
+    pub digest_entries_per_kind: usize,
 }
 
 fn scope_name(entry: &HarnessEntry) -> &'static str {
@@ -485,6 +488,10 @@ pub fn harness_digest_fingerprint(
     flags_material.insert(
         "includeRefineExamples".to_string(),
         serde_json::json!(render_flags.include_refine_examples),
+    );
+    flags_material.insert(
+        "digestEntriesPerKind".to_string(),
+        serde_json::json!(render_flags.digest_entries_per_kind),
     );
     let mut material = serde_json::Map::new();
     material.insert(
@@ -696,6 +703,7 @@ mod tests {
         // only for skills, so an arguments-only change stays inert, exactly
         // like the TS fingerprint material).
         let flags = HarnessDigestRenderFlags {
+            digest_entries_per_kind: DEFAULT_OVERVIEW_ENTRY_LIMIT,
             include_ipython_examples: true,
             include_shell_examples: false,
             include_refine_examples: false,
@@ -729,6 +737,7 @@ mod tests {
             .unwrap()
             .insert("zeta".to_string(), zeta);
         let flags = HarnessDigestRenderFlags {
+            digest_entries_per_kind: DEFAULT_OVERVIEW_ENTRY_LIMIT,
             include_ipython_examples: true,
             include_shell_examples: false,
             include_refine_examples: false,
@@ -764,6 +773,7 @@ mod tests {
         // The shell flag cannot change the digest while IPython examples
         // take precedence: it is normalized out of the material.
         let shell_on = HarnessDigestRenderFlags {
+            digest_entries_per_kind: DEFAULT_OVERVIEW_ENTRY_LIMIT,
             include_ipython_examples: true,
             include_shell_examples: true,
             include_refine_examples: false,
@@ -772,6 +782,7 @@ mod tests {
         // Without IPython examples the shell contract renders, so the flag
         // participates; so does the refine flag while IPython is on.
         let shell_only = HarnessDigestRenderFlags {
+            digest_entries_per_kind: DEFAULT_OVERVIEW_ENTRY_LIMIT,
             include_ipython_examples: false,
             include_shell_examples: true,
             include_refine_examples: false,
@@ -813,6 +824,7 @@ mod tests {
                 created_at: String::new(),
             });
         let flags = HarnessDigestRenderFlags {
+            digest_entries_per_kind: DEFAULT_OVERVIEW_ENTRY_LIMIT,
             include_ipython_examples: true,
             include_shell_examples: false,
             include_refine_examples: true,
@@ -864,6 +876,71 @@ mod tests {
             .unwrap()
             .insert("skill_a".to_string(), moved_skill);
         assert_ne!(harness_digest_fingerprint(&moved, flags), baseline);
+    }
+
+    #[test]
+    fn digest_entry_cap_lists_every_entry_past_the_default_three() {
+        // The settings-driven cap is the coverage lever: with twelve memories the
+        // default three hide nine behind `+9 more`, and a raised cap lists them.
+        let mut state = empty_harness_state();
+        let memory = state.entries.get_mut(&RefinementKind::Memory).unwrap();
+        for index in 0..12 {
+            memory.insert(
+                format!("m{index}"),
+                HarnessEntry {
+                    id: format!("m{index}"),
+                    kind: RefinementKind::Memory,
+                    title: format!("Fact {index}"),
+                    content: "body".to_string(),
+                    path: format!("/m/m{index}"),
+                    scope: Some(HarnessScope::Global),
+                    reference: serde_json::Map::default(),
+                    arguments: serde_json::Map::default(),
+                    metadata: serde_json::Map::default(),
+                    source: "test".to_string(),
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                    version: 1,
+                },
+            );
+        }
+        let capped = format_harness_state_for_prompt(
+            &state,
+            &HarnessStatePromptOptions {
+                max_entries_per_kind: Some(3),
+                ..Default::default()
+            },
+        );
+        assert!(capped.contains("- +9 more memory entries"));
+        let raised = format_harness_state_for_prompt(
+            &state,
+            &HarnessStatePromptOptions {
+                max_entries_per_kind: Some(12),
+                ..Default::default()
+            },
+        );
+        assert!(!raised.contains("more memory entries"));
+        assert_eq!(raised.matches("- [global:m").count(), 12);
+    }
+
+    #[test]
+    fn digest_fingerprint_covers_the_entry_cap() {
+        // A cap change renders a different digest, so it must invalidate delivery.
+        let state = empty_harness_state();
+        let at_default = HarnessDigestRenderFlags {
+            include_ipython_examples: true,
+            include_shell_examples: false,
+            include_refine_examples: true,
+            digest_entries_per_kind: DEFAULT_OVERVIEW_ENTRY_LIMIT,
+        };
+        let raised = HarnessDigestRenderFlags {
+            digest_entries_per_kind: 12,
+            ..at_default
+        };
+        assert_ne!(
+            harness_digest_fingerprint(&state, at_default),
+            harness_digest_fingerprint(&state, raised)
+        );
     }
 
     #[test]

@@ -75,6 +75,9 @@ Onboarding
 Harness / 代理轨迹 / 工厂 / 遥测
 ════════════════════════════════════════════
 "harnessRefinements": true,           // harness 创建与上下文加载总开关；未设置 = 启用
+"harness": {
+  "digestEntriesPerKind": null        // digest 每种 kind 最多列几条；未设置 = 3，取值夹在 1..64
+},
 "agentTraces": {
   "enabled": false                    // agent-traces 记录开关（还需 auth.json 里的 prime-agent-traces 凭据）
 },

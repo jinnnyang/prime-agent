@@ -593,6 +593,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // from the session artifacts (or the daemon-owned conversation log), and
     // the interfaces the digest may reference.
     let digest_context = super::harness_digest::HarnessDigestContext {
+        entries_per_kind: crate::refinement::digest_entries_per_kind(
+            refinement_settings
+                .settings()
+                .harness
+                .as_ref()
+                .and_then(|harness| harness.digest_entries_per_kind),
+        ),
         global_dir: crate::refinement::get_global_harness_state_dir(&config.agent_dir),
         local_dir: local_harness_dir,
         include_ipython: active_tool_names
