@@ -182,6 +182,16 @@ pub fn release_lock(agent_dir: &Path) {
     let _ = std::fs::remove_file(memory_dir(agent_dir).join(".dream.lock"));
 }
 
+/// The heartbeat interval string for the pass's chosen next run time. The
+/// scheduler primitive in this runtime is a recurring, session-bound heartbeat,
+/// so a pass schedules its successor with `rlm_heartbeat.create(...)`.
+#[must_use]
+pub fn heartbeat_interval(next_at: u64, now: u64) -> String {
+    let seconds = clamp_next_at(now, Some(next_at)).saturating_sub(now);
+    let hours = seconds.div_ceil(3_600).max(1);
+    format!("every {hours}h")
+}
+
 /// The instruction block the pass is spawned with. Scope, budget, and the
 /// write discipline are stated here because the pass decides its own walk.
 #[must_use]
@@ -292,6 +302,14 @@ mod tests {
         assert!(acquire_lock(dir.path(), 1_000 + DREAM_LOCK_STALE_SECS + 1).unwrap());
         release_lock(dir.path());
         assert!(acquire_lock(dir.path(), 2_000).unwrap());
+    }
+
+    #[test]
+    fn the_next_run_becomes_a_heartbeat_interval() {
+        let now = 1_000_000;
+        assert_eq!(heartbeat_interval(now + 12 * 3_600, now), "every 12h");
+        assert_eq!(heartbeat_interval(now, now), "every 6h");
+        assert_eq!(heartbeat_interval(now + 40 * 24 * 3_600, now), "every 336h");
     }
 
     #[test]
