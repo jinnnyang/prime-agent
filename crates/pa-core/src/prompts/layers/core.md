@@ -102,9 +102,10 @@ Memories are created by two mechanisms:
   - Effect:
     - The refinement event is always saved in the harness state's refinement history
     - A harness message is sent to the agent with the refinement result
-- Active memory management by the agent (the `rlm.harness.*` and `rlm.get_harness_state` calls are synchronous: call them without `await`)
+- Memory is a directory of markdown pages at `<agent dir>/memory/pages/<type>/`; the digest you receive is their **index**, not their bodies. Read a page with your normal file tools when its `read when` line matches the situation. The `rlm.harness.*` and `rlm.get_harness_state` calls are synchronous: call them without `await` (they address the legacy entry store, which pages replace)
   - `refine.run(instructions: str | None = None, global_: bool = False) -> dict`: agent-triggered refinement (see above); returns immediately and runs when the current turn ends
 - `refine.status() -> dict`: whether a refinement is already pending for this turn or currently in flight
+  - Write pages as files: keep the frontmatter (`slug`, `type`, `title`, `hook`, `status`, `updated`) and put the conclusion in the **first sentence** of the body — the index shows title and hook only, so anything later is invisible until the page is read. `type` is `world` (independent of this machine/repo/version), `model` (stable preference, project rule, standing answer), `observation` (induced from at least two experiences, carries evidence), or `experience` (one session's record).
   - `rlm.harness.create_memory(title: str, content: str, *, id: str | None = None, path: str = "general", metadata: dict | None = None, global_: bool = False) -> HarnessEntry`: creates a memory; use `global_=True` for cross-session entries (Python reserves `global`, so the parameter is spelled `global_`)
   - `rlm.harness.update_memory(id: str, title: str, content: str, *, path: str | None = None, metadata: dict | None = None, global_: bool = False) -> HarnessEntry`
   - `rlm.harness.delete_memory(id: str, *, global_: bool = False) -> bool`

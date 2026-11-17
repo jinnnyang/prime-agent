@@ -19,10 +19,42 @@ use super::messages::{HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX};
 #[cfg(test)]
 mod direction;
 
+/// Resident-index character budget. Measured on the 12-page corpus: full hooks
+/// cost 644 tokens (1,729 chars), no hooks 383, four pages per type 279. 1,700
+/// chars keeps every page of that corpus readable *with* its routing line, and
+/// the ladder takes over past ~15 pages.
+pub const MEMORY_INDEX_BUDGET_CHARS: usize = 1700;
+
+/// The instruction block that replaces the entry-store preamble when pages are
+/// the source of truth. Kept close in length to the block it replaces: the cost
+/// of the digest is dominated by instructions, not by the entries themselves.
+fn memory_index_preamble(flags: HarnessDigestRenderFlags) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "The memory below is an index of markdown pages, not the pages themselves. Each line routes: read the page file for its body with your normal file tools (`bash`, `python_repl`). A page's `read when` line names the situation that makes it relevant; titles alone do not decide that.\n\n",
+    );
+    out.push_str(
+        "Pages are typed: `world` (facts independent of this machine, repo, and version), `model` (stable preferences, project rules, standing answers), `observation` (induced from at least two experiences, carries evidence), `experience` (what happened in one session). Type decides how long a page stays worth reading.\n\n",
+    );
+    if flags.include_ipython_examples {
+        out.push_str(
+            "Write and update pages as files: keep the frontmatter (`slug`, `type`, `title`, `hook`, `status`, `updated`) intact and put the conclusion in the first sentence of the body, because the index shows the title and hook only. `await refine.run()` remains the way to propose a refinement; it writes pages.",
+        );
+    } else {
+        out.push_str(
+            "Write and update pages as files: keep the frontmatter (`slug`, `type`, `title`, `hook`, `status`, `updated`) intact and put the conclusion in the first sentence of the body.",
+        );
+    }
+    out
+}
+
 /// Session-scoped digest inputs: where harness state lives and which
 /// interfaces the digest may reference.
 #[derive(Debug, Clone)]
 pub struct HarnessDigestContext {
+    /// The agent dir whose `memory/pages` replace the entry store when it holds
+    /// pages; `None` keeps the legacy render.
+    pub agent_dir: Option<PathBuf>,
     /// Entries listed per kind before the `+N more` line (settings-driven,
     /// resolved through [`crate::refinement::digest_entries_per_kind`]).
     pub entries_per_kind: usize,
@@ -85,6 +117,28 @@ fn render_digest_with_fingerprint(
     context: &HarnessDigestContext,
     query_terms: HarnessQueryTerms,
 ) -> HarnessDigestRender {
+    // Pages replace the entry store: when the agent dir has pages, the digest is
+    // their index and the entry render never runs. Falling through keeps an agent
+    // with no pages working exactly as before.
+    if let Some(agent_dir) = &context.agent_dir {
+        let pages = crate::memory::load_pages(agent_dir);
+        if !pages.is_empty() {
+            let index = crate::memory::render_index(&pages, MEMORY_INDEX_BUDGET_CHARS);
+            let render_flags = HarnessDigestRenderFlags {
+                include_ipython_examples: context.include_ipython,
+                include_shell_examples: context.include_shell_examples,
+                include_refine_examples: context.include_ipython && context.include_refine,
+                digest_entries_per_kind: context.entries_per_kind,
+            };
+            return HarnessDigestRender {
+                digest: format!("{}{}", memory_index_preamble(render_flags), index.text),
+                state_fingerprint: crate::refinement::ranking::page_index_fingerprint(
+                    &index.fingerprint,
+                    render_flags,
+                ),
+            };
+        }
+    }
     let global = load_harness_state(&context.global_dir, HarnessScope::Global);
     let local = context
         .local_dir
