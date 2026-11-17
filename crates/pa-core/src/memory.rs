@@ -21,7 +21,7 @@ pub const PAGES_DIR_NAME: &str = "pages";
 
 /// One page's index-relevant frontmatter. The body is deliberately not read:
 /// the index routes, it does not summarize.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryPage {
     pub slug: String,
     /// `world` | `model` | `observation` | `experience` (free-form on disk).
@@ -32,12 +32,25 @@ pub struct MemoryPage {
     pub status: Option<String>,
     pub updated: Option<String>,
     pub path: PathBuf,
+    /// Evidence entries declared in the frontmatter. A count, not the evidence:
+    /// the index routes and must not restate it.
+    pub evidence: usize,
+    /// Host-owned sampling weight; `None` until the host records a read.
+    pub weight: Option<f64>,
+    /// Body length in characters, the fixed floor of the removal rule.
+    pub body_chars: usize,
 }
 
 impl MemoryPage {
     /// Whether the page may appear in the index at all.
     fn is_listable(&self) -> bool {
         !matches!(self.status.as_deref(), Some("archive" | "invalidated"))
+    }
+
+    /// Disputed pages still list, but apart from the type sections: a
+    /// contradicted conclusion must not read as settled knowledge.
+    fn is_disputed(&self) -> bool {
+        matches!(self.status.as_deref(), Some("disputed"))
     }
 }
 
@@ -91,55 +104,46 @@ fn collect(dir: &Path, out: &mut Vec<MemoryPage>) {
 
 fn parse_page(path: &Path) -> Option<MemoryPage> {
     let text = std::fs::read_to_string(path).ok()?;
-    let mut lines = text.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    let mut fields: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed == "---" {
-            break;
-        }
-        let Some((key, value)) = trimmed.split_once(':') else {
-            continue;
-        };
-        // Nested blocks (`relations:`, `evidence:`, `history:`) are not index
-        // material and would otherwise overwrite their parent key with junk.
-        if value.trim().is_empty() && key.trim().chars().all(|c| c == ' ' || c.is_alphabetic()) {
-            continue;
-        }
-        fields.insert(key.trim().to_string(), unquote(value.trim()));
-    }
-    let slug = fields.get("slug").cloned().or_else(|| {
+    let (frontmatter, body) = split_frontmatter(&text)?;
+    let fields: serde_yaml::Value = serde_yaml::from_str(frontmatter).unwrap_or_default();
+    let field = |key: &str| {
+        fields
+            .get(key)
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string)
+    };
+    let slug = field("slug").or_else(|| {
         path.file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
     })?;
-    let title = fields.get("title").cloned()?;
+    let title = field("title")?;
+    let evidence = fields
+        .get("evidence")
+        .and_then(serde_yaml::Value::as_sequence)
+        .map_or(0, Vec::len);
     Some(MemoryPage {
         slug,
-        kind: fields
-            .get("type")
-            .cloned()
-            .unwrap_or_else(|| "other".to_string()),
+        kind: field("type").unwrap_or_else(|| "other".to_string()),
         title,
-        hook: fields.get("hook").cloned(),
-        status: fields.get("status").cloned(),
-        updated: fields
-            .get("updated")
-            .or_else(|| fields.get("checked"))
-            .cloned(),
+        hook: field("hook"),
+        status: field("status"),
+        updated: field("updated").or_else(|| field("checked")),
         path: path.to_path_buf(),
+        evidence,
+        weight: fields.get("weight").and_then(serde_yaml::Value::as_f64),
+        body_chars: body.trim().chars().count(),
     })
 }
 
-fn unquote(value: &str) -> String {
-    value
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim()
-        .to_string()
+/// The frontmatter block and the body after it. A page without frontmatter is
+/// not a page: the type and hook the index needs live there.
+fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix("---")?;
+    let rest = rest.trim_start_matches(['\r', '\n']);
+    let close = rest.find("\n---")?;
+    let frontmatter = &rest[..close];
+    let body = rest[close..].trim_start_matches(['-', '\r', '\n']);
+    Some((frontmatter, body))
 }
 
 /// A render of the pages as the model-facing index.
@@ -222,7 +226,10 @@ fn render_with(pages: &[MemoryPage], rung: Rung) -> String {
         "Each line routes: read the page file for its body. `read when` is the situation that makes it relevant.\n\n",
     );
     for kind in MEMORY_TYPES {
-        let section: Vec<&MemoryPage> = pages.iter().filter(|page| page.kind == kind).collect();
+        let section: Vec<&MemoryPage> = pages
+            .iter()
+            .filter(|page| page.kind == kind && !page.is_disputed())
+            .collect();
         if section.is_empty() {
             continue;
         }
@@ -240,6 +247,18 @@ fn render_with(pages: &[MemoryPage], rung: Rung) -> String {
         let hidden = section.len() - shown.len();
         if hidden > 0 {
             let _ = writeln!(out, "- +{hidden} more {kind}");
+        }
+        out.push('\n');
+    }
+    let disputed: Vec<&MemoryPage> = pages.iter().filter(|page| page.is_disputed()).collect();
+    if !disputed.is_empty() {
+        let _ = writeln!(out, "## disputed ({})", disputed.len());
+        for page in disputed {
+            let _ = writeln!(
+                out,
+                "- {} — {} (contradicted; read before relying)",
+                page.slug, page.title
+            );
         }
         out.push('\n');
     }
@@ -309,6 +328,9 @@ mod tests {
             status: None,
             updated: None,
             path: PathBuf::from(format!("/pages/{kind}/{slug}.md")),
+            evidence: 0,
+            weight: None,
+            body_chars: 0,
         }
     }
 
@@ -363,6 +385,37 @@ mod tests {
         // Freshest four survive, oldest two are the ones withheld.
         assert!(tiny.text.contains("o5"));
         assert!(!tiny.text.contains("- o0 "));
+    }
+
+    #[test]
+    fn page_schema_reads_evidence_weight_and_body_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        let model_dir = pages_dir(agent).join("observation");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(
+            model_dir.join("ev.md"),
+            "---\nslug: ev\ntype: observation\ntitle: Ev\nhook: when testing\nstatus: active\nweight: 0.75\nevidence:\n  - kind: command\n    ref: \"cargo test (2026-11-09)\"\n  - kind: session\n    ref: \"01a1e2fb\"\n---\n\nfour candles here\n",
+        )
+        .unwrap();
+        let pages = load_pages(agent);
+        assert_eq!(pages.len(), 1);
+        let page = &pages[0];
+        assert_eq!(page.evidence, 2);
+        assert_eq!(page.weight, Some(0.75));
+        assert_eq!(page.body_chars, "four candles here".chars().count());
+        assert_eq!(page.hook.as_deref(), Some("when testing"));
+    }
+
+    #[test]
+    fn disputed_pages_list_apart_from_their_type() {
+        let mut disputed = page("d1", "observation", "contradicted claim", None);
+        disputed.status = Some("disputed".to_string());
+        let pages = vec![page("o1", "observation", "settled claim", None), disputed];
+        let index = render_index(&pages, 10_000);
+        assert!(index.text.contains("## observation (1)"), "{}", index.text);
+        assert!(index.text.contains("## disputed (1)"), "{}", index.text);
+        assert!(index.text.contains("contradicted; read before relying"));
     }
 
     #[test]
