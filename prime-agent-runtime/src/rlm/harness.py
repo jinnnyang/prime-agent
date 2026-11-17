@@ -133,6 +133,195 @@ def _agent_dir() -> Path:
     return Path(raw).expanduser().resolve()
 
 
+_MEMORY_TYPES: tuple[str, ...] = ("world", "model", "observation", "experience")
+_MEMORY_DEFAULT_TYPE = "experience"
+_MEMORY_DIR_NAME = "memory"
+_MEMORY_PAGES_DIR_NAME = "pages"
+_MEMORY_ARCHIVE_DIR_NAME = "archive"
+_MEMORY_ARCHIVE_LOG = "_archive.md"
+# Pages that are structure nodes, not knowledge units.
+_MEMORY_SKIPPED_DIRS = frozenset({"_entities"})
+
+
+def _memory_dir() -> Path:
+    return _agent_dir() / _MEMORY_DIR_NAME
+
+
+def _memory_pages_dir() -> Path:
+    return _memory_dir() / _MEMORY_PAGES_DIR_NAME
+
+
+def _split_page(text: str) -> tuple[dict[str, str], str]:
+    """The page's top-level frontmatter fields and its body."""
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}, text
+    block = text[3:end]
+    body = text[end + 4 :].lstrip("-\r\n")
+    fields: dict[str, str] = {}
+    for line in block.splitlines():
+        if not line or line[0] in " \t-#":
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        fields[key.strip()] = value.strip().strip("'\"")
+    return fields, body
+
+
+def _page_files() -> dict[str, Path]:
+    """slug -> path for every knowledge page on disk (structure nodes skipped)."""
+    root = _memory_pages_dir()
+    found: dict[str, Path] = {}
+    if not root.is_dir():
+        return found
+    for path in sorted(root.rglob("*.md")):
+        if _MEMORY_SKIPPED_DIRS.intersection(path.parts):
+            continue
+        try:
+            fields, _ = _split_page(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        found[fields.get("slug") or path.stem] = path
+    return found
+
+
+def _yaml_scalar(value: str) -> str:
+    """A frontmatter scalar that survives a YAML parse with any punctuation."""
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+def _merge_frontmatter(block: list[str], updates: dict[str, str]) -> list[str]:
+    """Rewrite the given top-level keys, keeping every other line verbatim.
+
+    Nested blocks (``evidence:``, ``relations:``, ``history:``) belong to a parent
+    key and are kept as-is unless that parent key is being rewritten, so an edit
+    never silently drops a page's provenance.
+    """
+    out: list[str] = []
+    written: set[str] = set()
+    skip_children = False
+    for line in block:
+        nested = bool(line) and (line[0] in " \t" or line.startswith("-"))
+        if nested and skip_children:
+            continue
+        if nested:
+            out.append(line)
+            continue
+        key, sep, _ = line.partition(":")
+        key = key.strip()
+        if not sep:
+            out.append(line)
+            continue
+        if key in updates:
+            skip_children = True
+            weight = updates[key]
+            if weight:
+                out.append(f"{key}: {weight}")
+                written.add(key)
+            continue
+        skip_children = False
+        out.append(line)
+    for key, value in updates.items():
+        if key not in written and value:
+            out.append(f"{key}: {value}")
+    return out
+
+
+def _write_memory_page(
+    slug: str,
+    *,
+    page_type: str,
+    title: str,
+    content: str,
+    hook: str | None = None,
+    status: str = "draft",
+    merge_path: Path | None = None,
+) -> Path:
+    """Write a page; an existing page keeps every field the caller omits."""
+    if page_type not in _MEMORY_TYPES:
+        raise ValueError(
+            f"unknown memory type {page_type!r}; expected one of {list(_MEMORY_TYPES)}"
+        )
+    block: list[str] = []
+    if merge_path is not None and merge_path.exists():
+        try:
+            text = merge_path.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        if text.startswith("---"):
+            close = text.find("\n---", 3)
+            if close != -1:
+                block = text[3:close].strip("\r\n").splitlines()
+    updates = {
+        "slug": _yaml_scalar(slug),
+        "type": page_type,
+        "title": _yaml_scalar(title),
+        "status": status,
+        "updated": datetime.now(timezone.utc).date().isoformat(),
+    }
+    if hook is not None:
+        updates["hook"] = _yaml_scalar(hook)
+    lines = ["---", *_merge_frontmatter(block, updates), "---"]
+    target = _memory_pages_dir() / page_type / f"{slug}.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n\n" + content.strip() + "\n", encoding="utf-8")
+    return target
+
+
+def _tombstone_memory_page(slug: str) -> bool:
+    """Archive a page instead of unlinking it: removal stays reversible."""
+    path = _page_files().get(slug)
+    if path is None:
+        return False
+    archive = _memory_dir() / _MEMORY_ARCHIVE_DIR_NAME
+    archive.mkdir(parents=True, exist_ok=True)
+    fields, _ = _split_page(path.read_text(encoding="utf-8"))
+    path.replace(archive / path.name)
+    title = fields.get("title", slug)
+    log = _memory_dir() / _MEMORY_ARCHIVE_LOG
+    if not log.exists():
+        log.write_text("# Archive\n\n", encoding="utf-8")
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(f"- {slug} — {title} (archived {datetime.now(timezone.utc).date().isoformat()})\n")
+    return True
+
+
+def _memory_page_entry(slug: str, path: Path) -> HarnessEntry:
+    """Project a page into the entry shape the read tools return."""
+    fields, body = _split_page(path.read_text(encoding="utf-8"))
+    return HarnessEntry(
+        id=slug,
+        kind="memory",
+        title=fields.get("title", slug),
+        content=body.strip(),
+        path=fields.get("type", "other"),
+        scope="global",
+        reference={},
+        arguments={},
+        metadata={
+            "hook": fields.get("hook", ""),
+            "status": fields.get("status", ""),
+            "updated": fields.get("updated") or fields.get("checked", ""),
+            "page": str(path),
+            "evidence": fields.get("evidence", ""),
+            "weight": fields.get("weight", ""),
+        },
+        source="agent",
+    )
+
+
+def memory_pages() -> dict[str, HarnessEntry]:
+    """Every knowledge page as an entry, for read tools that predate pages."""
+    return {
+        slug: _memory_page_entry(slug, path)
+        for slug, path in sorted(_page_files().items())
+    }
+
+
 def _require_refinements_enabled() -> None:
     """Read the host's global-only master switch, without caching it."""
     try:
@@ -938,9 +1127,50 @@ class HarnessState:
         path: str = "general",
         metadata: dict[str, Any] | None = None,
         global_: bool = False,
+        type: str | None = None,
+        hook: str | None = None,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.create("memory", title, content, id=id, path=path, metadata=metadata, global_=global_, **kwargs)
+        """Create a memory page.
+
+        Memory is page-backed: this writes a markdown file under
+        ``<agent dir>/memory/pages/<type>/`` and returns the projected entry.
+        ``type`` decides how long the page stays worth reading and defaults to
+        ``experience`` (one session's record); ``hook`` is the routing line the
+        digest shows. The digest index picks the page up on the next render.
+        """
+        if target := self._global_target(global_, kwargs):
+            return target.create_memory(
+                title,
+                content,
+                id=id,
+                path=path,
+                metadata=metadata,
+                global_=True,
+                type=type,
+                hook=hook,
+                **kwargs,
+            )
+        self._ensure_local_writable()
+        _require_text("memory", title, "title", title)
+        slug = id or _slug(title, "memory")
+        _require_text("memory", _describe_entry(slug, title), "id", slug)
+        page_type = type or (
+            metadata.get("type") if isinstance(metadata, dict) and metadata.get("type") else None
+        ) or _MEMORY_DEFAULT_TYPE
+        page_hook = hook or (
+            metadata.get("hook") if isinstance(metadata, dict) and metadata.get("hook") else None
+        )
+        page = _write_memory_page(
+            slug,
+            page_type=page_type,
+            title=title,
+            content=content,
+            hook=page_hook,
+            status="draft",
+            merge_path=_page_files().get(slug),
+        )
+        return _memory_page_entry(slug, page)
 
     def update_memory(
         self,
@@ -950,13 +1180,52 @@ class HarnessState:
         *,
         path: str | None = None,
         metadata: dict[str, Any] | None = None,
+        hook: str | None = None,
         global_: bool = False,
         **kwargs: Any,
     ) -> HarnessEntry:
-        return self.update("memory", id, title, content, path=path, metadata=metadata, global_=global_, **kwargs)
+        if target := self._global_target(global_, kwargs):
+            return target.update_memory(
+                id,
+                title,
+                content,
+                path=path,
+                metadata=metadata,
+                global_=True,
+                hook=hook,
+                **kwargs,
+            )
+        self._ensure_local_writable()
+        pages = _page_files()
+        page = pages.get(id)
+        if page is None:
+            raise KeyError(f"memory page {id!r} not found under {_memory_pages_dir()}")
+        page_type = (metadata or {}).get("type") or page.parent.name or _MEMORY_DEFAULT_TYPE
+        if page_type not in _MEMORY_TYPES:
+            page_type = _MEMORY_DEFAULT_TYPE
+        written = _write_memory_page(
+            id,
+            page_type=page_type,
+            title=title,
+            content=content,
+            hook=hook,
+            status="active",
+            merge_path=page,
+        )
+        return _memory_page_entry(id, written)
 
     def delete_memory(self, id: str, *, global_: bool = False, **kwargs: Any) -> bool:
-        return self.delete("memory", id, global_=global_, **kwargs)
+        """Archive a memory page instead of unlinking it.
+
+        Removal is dream's decision, not the agent's: this stops a page from
+        reaching the index (it moves under ``memory/archive/``) and leaves a
+        tombstone line in ``memory/_archive.md``, so a mistaken archive is
+        reversible and the next consolidation pass does not recreate the page.
+        """
+        if target := self._global_target(global_, kwargs):
+            return target.delete_memory(id, global_=True, **kwargs)
+        self._ensure_local_writable()
+        return _tombstone_memory_page(id)
 
     def create_prompt_note(
         self,
@@ -1229,6 +1498,22 @@ class HarnessState:
         ]
         for kind in _KINDS:
             records = self.list(kind)[:max_entries_per_kind]
+            if kind == "memory":
+                # Memory is page-backed: the count and the records come from the
+                # pages on disk, not from this store's entries.
+                pages = sorted(memory_pages().values(), key=lambda entry: entry.id)
+                lines.append(f"{kind}: {len(pages)} (page-backed, <agent dir>/memory/pages/)")
+                for entry in pages[:max_entries_per_kind]:
+                    fields = entry.metadata or {}
+                    hook = fields.get("hook") or ""
+                    lines.append(
+                        f"  - [{entry.path}:{entry.id}] {entry.title}"
+                        + (f" — read when: {hook}" if hook else "")
+                    )
+                overflow = len(pages) - max_entries_per_kind
+                if overflow > 0:
+                    lines.append(f"  - +{overflow} more")
+                continue
             lines.append(f"{kind}: {len(self.entries[kind])}")
             for entry in records:
                 summary = entry.content.strip().replace("\n", " ")
@@ -1287,9 +1572,20 @@ class HarnessState:
             raise TypeError("limit must be a positive int")
         terms = _harness_query_terms(query)
         if not terms:
-            return []
+            # Silence here is what produced duplicate memories: a query with no
+            # usable term (ASCII shorter than three characters, punctuation only)
+            # must say so instead of looking like "nothing matched".
+            raise ValueError(
+                f"query {query!r} has no searchable term: CJK characters count from one, "
+                "other words need at least three characters"
+            )
 
         entries = self.list(kind, **kwargs) if kind is not None else self.list(None, **kwargs)
+        if kind is None or kind == "memory":
+            # Pages are the memory store: they join the ranked corpus so a search
+            # for a fact finds the page, not an empty legacy entry list.
+            entries = [entry for entry in entries if entry.kind != "memory"]
+            entries.extend(memory_pages().values())
 
         # Document frequency per term over the ranked corpus: a term in
         # every entry weighs log(2), a term in one entry of N weighs
