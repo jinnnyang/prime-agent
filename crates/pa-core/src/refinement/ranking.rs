@@ -195,6 +195,9 @@ pub struct HarnessStatePromptOptions {
     pub include_shell_examples: bool,
     pub include_refine_examples: Option<bool>,
     pub query_terms: Option<HarnessQueryTerms>,
+    /// Kinds the caller renders itself (the page-backed memory index). They are
+    /// skipped here, so neither their count line nor their entries appear.
+    pub skipped_kinds: &'static [&'static str],
 }
 
 /// Render the harness state as the model-facing digest block. Strings must
@@ -243,6 +246,9 @@ pub fn format_harness_state_for_prompt(
     let query_terms = &options.query_terms;
     let mut total_entries = 0usize;
     for kind in REFINEMENT_KINDS {
+        if options.skipped_kinds.contains(&kind) {
+            continue;
+        }
         let entries = state
             .entries
             .get(&kind_for(kind))
@@ -408,18 +414,21 @@ pub struct HarnessDigestRenderFlags {
     pub digest_entries_per_kind: usize,
 }
 
-/// Fingerprint of a page-backed digest: the page index hash plus the render
-/// flags the preamble reads. Pages are not `HarnessState`, so they carry their
-/// own material hash; the version keeps both renderers on one invalidation line.
+/// Fingerprint of a page-backed digest: the page index hash, the fingerprint of
+/// the entry-rendered kinds, and the render flags the preamble reads. Pages are
+/// not `HarnessState`, so they carry their own material hash; the version keeps
+/// both renderers on one invalidation line.
 #[must_use]
 pub fn page_index_fingerprint(
     index_fingerprint: &str,
+    entries_fingerprint: &str,
     render_flags: HarnessDigestRenderFlags,
 ) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(HARNESS_DIGEST_FINGERPRINT_VERSION.to_le_bytes());
     hasher.update(index_fingerprint.as_bytes());
+    hasher.update(entries_fingerprint.as_bytes());
     hasher.update([u8::from(render_flags.include_ipython_examples)]);
     hasher.update([u8::from(render_flags.include_shell_examples)]);
     hasher.update([u8::from(render_flags.include_refine_examples)]);
