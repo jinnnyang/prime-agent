@@ -168,3 +168,59 @@ token 口径：`est_tokens = CJK 字数 + 其余字符 / 4`。**不是真实 tok
 - 设置示例：`docs/examples/settings.example.md`
 - 变更片段：`.changes/harness-digest-coverage.md`
 - 设计背景与投递基线：本地 `Technology-Lectotype\pa-memory-基线测量-20261117.md`
+
+---
+
+## 10. 页索引模式（本分支新增的第二件事）
+
+分支还换了 digest 的**数据源**：agent 目录下有 `memory/pages/**/*.md` 时，digest 渲染的是这些页的**索引**，不再是 `harness_state.json` 的条目列表。没有页的 agent 完全走旧渲染。
+
+```
+<agent dir>/memory/pages/<type>/*.md      ← 真相源（markdown + frontmatter）
+        ↓ load_pages()                    解析 slug / type / title / hook / status / updated
+        ↓ render_index(pages, 1700 chars) 按类型分节；每条出 slug — title + `read when`
+   digest 的记忆段 = 这个索引（不是页正文）
+```
+
+正文怎么读：模型用已有的 `bash` / `python_repl` 读文件，**不新增工具**。索引只负责"让人知道它存在、什么时候该读"。
+
+### 10.1 截断阶梯（按实测成本排序）
+
+12 页中文语料实测（CJK 记 1 token、ASCII 记 1/4）：
+
+| 阶梯 | 渲染字符 | token | 说明 |
+|---|---|---|---|
+| ① 全量带 hook | 1729 | 644 | 默认档 |
+| ② hook 截 40 字 | 1718 | 636 | 这批 hook 本来就短，几乎无收益；长 hook 语料才有用 |
+| ③ **去掉 hook** | 1109 | 383 | 大幅下降 |
+| ④ 每类只留最新 4 页（`+N more`） | 846 | 279 | 唯一会隐藏页的一档，按 `updated` 取最新 |
+
+预算 `MEMORY_INDEX_BUDGET_CHARS = 1700`：12 页全量带 hook 正好装下（1690 chars），超过约 15 页才开始降级。
+
+### 10.2 与旧机制的成本对照
+
+| | digest 总 token | 覆盖条目 |
+|---|---|---|
+| 旧机制（3 条 + 大段 call contract 说明） | 869 | 3 / 12 |
+| 页索引（12 页全量 + hook） | **847** | **12 / 12** |
+
+结论：**同等成本下覆盖率从 25% 提升到 100%**；固定说明从 608 tok 降到 223 tok，差额用来装页索引。
+
+### 10.3 沙盒里怎么验证这一档
+
+```bat
+cd C:\Users\jinnn\Desktop\pa-digest-sandbox
+try-sandbox.bat
+```
+
+页目录是 `agent\memory\pages\` 的一份快照（12 个可索引页 + 5 个 `_entities`，后者不参与索引）。进 TUI 后问一句 **「你的记忆是怎么组织的？」**：
+
+- 旧机制：会答 5 种 kind、`harness_state`、`rlm.harness.*`
+- 页索引模式：会答 markdown 页、四种 type、索引只做路由、正文要用文件工具读
+
+`_entities` 目录被显式跳过（结构节点不是知识单元）；`status: archive` / `invalidated` 的页不进索引。
+
+### 10.4 已知未做的部分
+
+- **写路径没换**：`rlm.harness.create_memory` 仍然写 `harness_state.json`；页模式下的条目不可见。写入映射是下一步。
+- 页索引模式的指纹版本升到 4，所有存量会话会重新投递一次 digest。

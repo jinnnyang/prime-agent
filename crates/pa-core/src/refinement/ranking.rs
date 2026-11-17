@@ -11,6 +11,14 @@ use super::{
     DEFAULT_OVERVIEW_REFINEMENT_LIMIT, REFINEMENT_KINDS,
 };
 
+/// How many withheld entry titles the digest overflow line names before it
+/// falls back to a bare count: enough to route, few enough to stay cheap.
+const OVERFLOW_TITLE_LIMIT: usize = 12;
+
+/// Per-title budget on the overflow line. Titles run long (paths, ids), and the
+/// line only has to make an entry recognizable, not to restate it.
+const OVERFLOW_TITLE_LENGTH: usize = 80;
+
 /// Term -> weight, built from task signal (goal, recent messages).
 pub type HarnessQueryTerms = HashMap<String, f64>;
 
@@ -323,7 +331,21 @@ pub fn format_harness_state_for_prompt(
         }
         let overflow = entries.len().saturating_sub(max_entries_per_kind);
         if overflow > 0 {
-            lines.push(format!("- +{overflow} more {kind_name} entries"));
+            // The count alone tells the model that entries exist but not which:
+            // the cheapest wrong action is then creating a duplicate. Titles are
+            // the routing key, are already ranked by relevance here, and cost a
+            // fraction of their 140-character bodies, so the overflow line names
+            // the withheld entries instead of only counting them.
+            let withheld = entries
+                .iter()
+                .skip(max_entries_per_kind)
+                .take(OVERFLOW_TITLE_LIMIT)
+                .map(|entry| compact_harness_text(&entry.title, OVERFLOW_TITLE_LENGTH))
+                .collect::<Vec<_>>()
+                .join("; ");
+            lines.push(format!(
+                "- +{overflow} more {kind_name} entries: {withheld}"
+            ));
         }
         lines.push(String::new());
     }
@@ -372,7 +394,7 @@ pub fn format_harness_state_for_prompt(
 /// Bump when the fingerprinted material or its canonical serialization
 /// changes, so fingerprints minted under different versions never compare
 /// equal.
-pub const HARNESS_DIGEST_FINGERPRINT_VERSION: u32 = 2;
+pub const HARNESS_DIGEST_FINGERPRINT_VERSION: u32 = 4;
 
 /// The render flags the digest actually reads: the relevance query terms
 /// are excluded — the digest stays frozen per delivery.
@@ -384,6 +406,29 @@ pub struct HarnessDigestRenderFlags {
     /// Entries listed per kind before the `+N more` line: a cap change renders
     /// a different digest, so the fingerprint covers it.
     pub digest_entries_per_kind: usize,
+}
+
+/// Fingerprint of a page-backed digest: the page index hash plus the render
+/// flags the preamble reads. Pages are not `HarnessState`, so they carry their
+/// own material hash; the version keeps both renderers on one invalidation line.
+#[must_use]
+pub fn page_index_fingerprint(
+    index_fingerprint: &str,
+    render_flags: HarnessDigestRenderFlags,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(HARNESS_DIGEST_FINGERPRINT_VERSION.to_le_bytes());
+    hasher.update(index_fingerprint.as_bytes());
+    hasher.update([u8::from(render_flags.include_ipython_examples)]);
+    hasher.update([u8::from(render_flags.include_shell_examples)]);
+    hasher.update([u8::from(render_flags.include_refine_examples)]);
+    hasher.update(
+        u64::try_from(render_flags.digest_entries_per_kind)
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    format!("{:x}", hasher.finalize())
 }
 
 fn scope_name(entry: &HarnessEntry) -> &'static str {
@@ -879,6 +924,48 @@ mod tests {
     }
 
     #[test]
+    fn digest_overflow_line_names_the_withheld_entries_in_ranked_order() {
+        // Twelve memories at the default cap hide nine; the line must name all
+        // nine in the order they were ranked, and stay bounded past the limit.
+        let mut state = empty_harness_state();
+        let memory = state.entries.get_mut(&RefinementKind::Memory).unwrap();
+        for index in 0..20 {
+            memory.insert(
+                format!("m{index:02}"),
+                HarnessEntry {
+                    id: format!("m{index:02}"),
+                    kind: RefinementKind::Memory,
+                    title: format!("Fact {index:02}"),
+                    content: "body".to_string(),
+                    path: format!("/m/m{index:02}"),
+                    scope: Some(HarnessScope::Global),
+                    reference: serde_json::Map::default(),
+                    arguments: serde_json::Map::default(),
+                    metadata: serde_json::Map::default(),
+                    source: "test".to_string(),
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                    version: 1,
+                },
+            );
+        }
+        let text = format_harness_state_for_prompt(
+            &state,
+            &HarnessStatePromptOptions {
+                max_entries_per_kind: Some(3),
+                ..Default::default()
+            },
+        );
+        let overflow = text
+            .lines()
+            .find(|line| line.starts_with("- +17 more memory entries"))
+            .expect("overflow line renders");
+        // 20 entries, 3 rendered, 17 withheld, 12 title slots.
+        assert_eq!(overflow.matches("Fact ").count(), OVERFLOW_TITLE_LIMIT);
+        assert!(overflow.ends_with("Fact 14"), "{overflow}");
+    }
+
+    #[test]
     fn digest_entry_cap_lists_every_entry_past_the_default_three() {
         // The settings-driven cap is the coverage lever: with twelve memories the
         // default three hide nine behind `+9 more`, and a raised cap lists them.
@@ -912,6 +999,10 @@ mod tests {
             },
         );
         assert!(capped.contains("- +9 more memory entries"));
+        // The overflow line names the withheld entries: a count alone leaves the
+        // model unable to tell whether a memory it needs already exists.
+        assert!(capped.contains("memory entries: "));
+        assert!(capped.contains("Fact 0") || capped.contains("Fact 1"));
         let raised = format_harness_state_for_prompt(
             &state,
             &HarnessStatePromptOptions {

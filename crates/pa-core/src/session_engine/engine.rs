@@ -620,6 +620,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // from the session artifacts (or the daemon-owned conversation log), and
     // the interfaces the digest may reference.
     let digest_context = super::harness_digest::HarnessDigestContext {
+        agent_dir: Some(config.agent_dir.clone()),
         entries_per_kind: crate::refinement::digest_entries_per_kind(
             refinement_settings
                 .settings()
@@ -638,6 +639,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 && skill.name == crate::prompts::system_prompt::REFINE_SKILL_NAME
         }),
     };
+    // Adoption signal for page-backed memory: once per session start, and only
+    // when the agent actually has pages (counts and the truncation rung only).
+    if let Some(wiring) = config.telemetry.as_ref() {
+        super::telemetry::track_memory_index_adoption(
+            &wiring.client,
+            &config.agent_dir,
+            super::harness_digest::MEMORY_INDEX_BUDGET_CHARS,
+        );
+    }
     let (existing_messages, has_thinking_entry, has_service_tier_entry) = {
         let session = wiring.session.lock().await;
         let messages = super::compact_session::rebuilt_context_after_compaction(&session);

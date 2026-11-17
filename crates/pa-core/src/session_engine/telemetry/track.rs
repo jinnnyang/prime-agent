@@ -129,3 +129,37 @@ pub fn track_worker_children_closed(client: &TelemetryClient, count: usize) {
     properties.set("count", Value::from(count));
     client.track("daemon event", properties);
 }
+
+/// Track a digest render that carries a page-backed memory index
+/// (`daemon event`, schema v1, kind `memory_index`): how many pages the agent
+/// has, how many types, and which truncation rung the budget forced. Counts
+/// only — never a slug, title, hook, or page body.
+pub fn track_memory_index(client: &TelemetryClient, pages: usize, kinds: usize, rung: u8) {
+    let mut properties = base_properties("daemon");
+    properties.set("kind", Value::from("memory_index"));
+    properties.set("pages", Value::from(pages));
+    properties.set("kinds", Value::from(kinds));
+    properties.set("rung", Value::from(rung));
+    client.track("daemon event", properties);
+}
+
+/// Track page-backed memory adoption once per session start: the agent has
+/// pages on disk and the digest will route through them. Counts only, and only
+/// when pages exist — an agent on the legacy entry store reports nothing.
+pub fn track_memory_index_adoption(
+    client: &TelemetryClient,
+    agent_dir: &std::path::Path,
+    budget_chars: usize,
+) {
+    let pages = crate::memory::load_pages(agent_dir);
+    if pages.is_empty() {
+        return;
+    }
+    let index = crate::memory::render_index(&pages, budget_chars);
+    let kinds = pages
+        .iter()
+        .map(|page| page.kind.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    track_memory_index(client, pages.len(), kinds, index.rung);
+}
