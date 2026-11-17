@@ -31,24 +31,8 @@ pub const MEMORY_INDEX_BUDGET_CHARS: usize = 1700;
 /// The instruction block that replaces the entry-store preamble when pages are
 /// the source of truth. Kept close in length to the block it replaces: the cost
 /// of the digest is dominated by instructions, not by the entries themselves.
-fn memory_index_preamble(flags: HarnessDigestRenderFlags) -> String {
-    let mut out = String::new();
-    out.push_str(
-        "The memory below is an index of markdown pages, not the pages themselves. Each line routes: read the page file for its body with your normal file tools (`bash`, `python_repl`). A page's `read when` line names the situation that makes it relevant; titles alone do not decide that.\n\n",
-    );
-    out.push_str(
-        "Pages are typed: `world` (facts independent of this machine, repo, and version), `model` (stable preferences, project rules, standing answers), `observation` (induced from at least two experiences, carries evidence), `experience` (what happened in one session). Type decides how long a page stays worth reading.\n\n",
-    );
-    if flags.include_ipython_examples {
-        out.push_str(
-            "Write and update pages as files: keep the frontmatter (`slug`, `type`, `title`, `hook`, `status`, `updated`) intact and put the conclusion in the first sentence of the body, because the index shows the title and hook only. `await refine.run()` remains the way to propose a refinement; it writes pages.",
-        );
-    } else {
-        out.push_str(
-            "Write and update pages as files: keep the frontmatter (`slug`, `type`, `title`, `hook`, `status`, `updated`) intact and put the conclusion in the first sentence of the body.",
-        );
-    }
-    out
+fn memory_index_preamble() -> &'static str {
+    "The memory below is an index of markdown pages. Read a page's body with your file tools when its `read when` line matches the situation. Types: `world` (facts independent of this machine and repo), `model` (stable preferences, rules, standing answers), `observation` (induced from at least two experiences, with evidence), `experience` (one session's record). Write pages as files: keep the frontmatter intact and put the conclusion in the body's first sentence.\n\n"
 }
 
 /// Session-scoped digest inputs: where harness state lives and which
@@ -164,7 +148,7 @@ fn render_digest_with_fingerprint(
         Some(index) => HarnessDigestRender {
             digest: format!(
                 "{entries_digest}\n{}{}",
-                memory_index_preamble(render_flags),
+                memory_index_preamble(),
                 index.text
             ),
             state_fingerprint: crate::refinement::ranking::page_index_fingerprint(
