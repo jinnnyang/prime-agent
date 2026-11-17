@@ -135,6 +135,59 @@ fn persisted_digest_round_trips() {
 }
 
 #[test]
+fn page_backed_digest_replaces_only_the_memory_section() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_dir = tmp.path().join("agent");
+    let model_dir = agent_dir.join("memory").join("pages").join("model");
+    std::fs::create_dir_all(&model_dir).unwrap();
+    std::fs::write(
+        model_dir.join("wombat.md"),
+        "---\nslug: wombat\ntype: model\ntitle: Wombat rule\nhook: when burrowing\nstatus: active\n---\n\nbody\n",
+    )
+    .unwrap();
+    let global_dir = agent_dir.join("harness");
+    let mut global = crate::refinement::empty_harness_state();
+    global
+        .entries
+        .get_mut(&crate::refinement::RefinementKind::Prompt)
+        .unwrap()
+        .insert(
+            "p1".to_string(),
+            crate::refinement::HarnessEntry {
+                id: "p1".to_string(),
+                kind: crate::refinement::RefinementKind::Prompt,
+                title: "Prompt addendum survives".to_string(),
+                content: "still rendered next to the page index".to_string(),
+                path: "general".to_string(),
+                scope: Some(crate::refinement::HarnessScope::Global),
+                reference: serde_json::Map::default(),
+                arguments: serde_json::Map::default(),
+                metadata: serde_json::Map::default(),
+                source: "refine".to_string(),
+                created_at: "2026-11-17T00:00:00.000Z".to_string(),
+                updated_at: "2026-11-17T00:00:00.000Z".to_string(),
+                version: 1,
+            },
+        );
+    crate::refinement::save_harness_state(&global_dir, &global).unwrap();
+    let context = HarnessDigestContext {
+        agent_dir: Some(agent_dir),
+        entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
+        global_dir,
+        local_dir: None,
+        include_ipython: true,
+        include_shell_examples: false,
+        include_refine: true,
+    };
+    let digest = harness_digest_text(&context, HarnessQueryTerms::default());
+    assert!(digest.contains("prompt: 1"), "{digest}");
+    assert!(digest.contains("Prompt addendum survives"), "{digest}");
+    assert!(digest.contains("# Memory"), "{digest}");
+    assert!(digest.contains("- wombat — Wombat rule"), "{digest}");
+    assert!(!digest.contains("memory: "), "{digest}");
+}
+
+#[test]
 fn out_of_context_file_entries_never_count_as_context_digests() {
     let wrapped = AgentMessage::Standard(Message::User(UserMessage {
         content: UserContent::Text(format!(

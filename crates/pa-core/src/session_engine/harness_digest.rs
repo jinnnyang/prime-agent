@@ -19,6 +19,9 @@ use super::messages::{HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX};
 #[cfg(test)]
 mod direction;
 
+/// The kinds the page-backed memory index renders in place of the entry store.
+const PAGE_BACKED_KINDS: &[&str] = &["memory"];
+
 /// Resident-index character budget. Measured on the 12-page corpus: full hooks
 /// cost 644 tokens (1,729 chars), no hooks 383, four pages per type 279. 1,700
 /// chars keeps every page of that corpus readable *with* its routing line, and
@@ -117,28 +120,6 @@ fn render_digest_with_fingerprint(
     context: &HarnessDigestContext,
     query_terms: HarnessQueryTerms,
 ) -> HarnessDigestRender {
-    // Pages replace the entry store: when the agent dir has pages, the digest is
-    // their index and the entry render never runs. Falling through keeps an agent
-    // with no pages working exactly as before.
-    if let Some(agent_dir) = &context.agent_dir {
-        let pages = crate::memory::load_pages(agent_dir);
-        if !pages.is_empty() {
-            let index = crate::memory::render_index(&pages, MEMORY_INDEX_BUDGET_CHARS);
-            let render_flags = HarnessDigestRenderFlags {
-                include_ipython_examples: context.include_ipython,
-                include_shell_examples: context.include_shell_examples,
-                include_refine_examples: context.include_ipython && context.include_refine,
-                digest_entries_per_kind: context.entries_per_kind,
-            };
-            return HarnessDigestRender {
-                digest: format!("{}{}", memory_index_preamble(render_flags), index.text),
-                state_fingerprint: crate::refinement::ranking::page_index_fingerprint(
-                    &index.fingerprint,
-                    render_flags,
-                ),
-            };
-        }
-    }
     let global = load_harness_state(&context.global_dir, HarnessScope::Global);
     let local = context
         .local_dir
@@ -151,7 +132,14 @@ fn render_digest_with_fingerprint(
         include_refine_examples: context.include_ipython && context.include_refine,
         digest_entries_per_kind: context.entries_per_kind,
     };
-    let digest = format_harness_state_for_prompt(
+    let pages = context
+        .agent_dir
+        .as_deref()
+        .map(crate::memory::load_pages)
+        .unwrap_or_default();
+    let index =
+        (!pages.is_empty()).then(|| crate::memory::render_index(&pages, MEMORY_INDEX_BUDGET_CHARS));
+    let entries_digest = format_harness_state_for_prompt(
         &merged,
         &HarnessStatePromptOptions {
             include_ipython_examples: Some(context.include_ipython),
@@ -159,13 +147,32 @@ fn render_digest_with_fingerprint(
             include_refine_examples: Some(render_flags.include_refine_examples),
             query_terms: Some(query_terms),
             max_entries_per_kind: Some(context.entries_per_kind),
+            skipped_kinds: if index.is_some() {
+                PAGE_BACKED_KINDS
+            } else {
+                &[]
+            },
             ..Default::default()
         },
     );
-    let state_fingerprint = harness_digest_fingerprint(&merged, render_flags);
-    HarnessDigestRender {
-        digest,
-        state_fingerprint,
+    let entries_fingerprint = harness_digest_fingerprint(&merged, render_flags);
+    match index {
+        None => HarnessDigestRender {
+            digest: entries_digest,
+            state_fingerprint: entries_fingerprint,
+        },
+        Some(index) => HarnessDigestRender {
+            digest: format!(
+                "{entries_digest}\n{}{}",
+                memory_index_preamble(render_flags),
+                index.text
+            ),
+            state_fingerprint: crate::refinement::ranking::page_index_fingerprint(
+                &index.fingerprint,
+                &entries_fingerprint,
+                render_flags,
+            ),
+        },
     }
 }
 
