@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod dream;
+
 use serde::{Deserialize, Serialize};
 
 /// Knowledge types a page may declare, in index order. Anything else lands in
