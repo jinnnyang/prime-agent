@@ -342,6 +342,35 @@ fn connected_slugs(agent_dir: &Path) -> std::collections::BTreeSet<String> {
     targets
 }
 
+/// Where the pass's instruction file lives while a pass is due. The digest points
+/// the session at this file instead of restating the instruction every turn.
+#[must_use]
+pub fn prompt_path(agent_dir: &Path) -> PathBuf {
+    memory_dir(agent_dir).join("DREAM.md")
+}
+
+/// Write the instruction file when a pass is due, so a session can hand it to a
+/// subagent as its task. Returns the prompt when it wrote one.
+///
+/// # Errors
+///
+/// Propagates the directory and file failures.
+pub fn ensure_prompt_file(
+    agent_dir: &Path,
+    decision: &DreamDecision,
+) -> std::io::Result<Option<String>> {
+    if !decision.due {
+        return Ok(None);
+    }
+    let prompt = dream_prompt(decision);
+    let path = prompt_path(agent_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, &prompt)?;
+    Ok(Some(prompt))
+}
+
 /// The instruction block the pass is spawned with. Scope, budget, and the
 /// write discipline are stated here because the pass decides its own walk.
 #[must_use]

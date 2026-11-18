@@ -126,6 +126,10 @@ pub struct HarnessSettings {
     /// line. Unset keeps [`crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT`];
     /// values clamp to `1..=crate::refinement::MAX_DIGEST_ENTRIES_PER_KIND`.
     pub digest_entries_per_kind: Option<u64>,
+    /// Whether the digest may say that a memory consolidation pass is due, so the
+    /// session runs one. Unset keeps it on; `false` silences the hint without
+    /// touching the page store.
+    pub dream_due_hint: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

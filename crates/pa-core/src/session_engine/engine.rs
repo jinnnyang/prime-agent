@@ -593,6 +593,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // from the session artifacts (or the daemon-owned conversation log), and
     // the interfaces the digest may reference.
     let digest_context = super::harness_digest::HarnessDigestContext {
+        dream_hint: if refinement_settings
+            .settings()
+            .harness
+            .as_ref()
+            .and_then(|harness| harness.dream_due_hint)
+            .unwrap_or(true)
+        {
+            super::harness_digest::DreamHint::Enabled
+        } else {
+            super::harness_digest::DreamHint::Silent
+        },
         agent_dir: Some(config.agent_dir.clone()),
         entries_per_kind: crate::refinement::digest_entries_per_kind(
             refinement_settings
