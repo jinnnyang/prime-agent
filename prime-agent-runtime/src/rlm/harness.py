@@ -37,6 +37,8 @@ HarnessScope = Literal["local", "global"]
 _DEFAULT_FILE_NAME = "harness_state.json"
 _DEFAULT_HARNESS_DIR_NAME = "harness"
 _KINDS: tuple[HarnessKind, ...] = ("prompt", "memory", "skill", "subagent", "factory")
+# Kinds whose truth lives in files, not in the harness-state entry store.
+_PAGE_BACKED_KINDS: frozenset[HarnessKind] = frozenset({"memory"})
 _state_cache: dict[tuple[Path, HarnessScope], "HarnessState"] = {}
 _LOCK_STALE_AFTER = 10.0
 _LOCK_ATTEMPTS = 50
@@ -312,6 +314,48 @@ def _memory_page_entry(slug: str, path: Path) -> HarnessEntry:
         },
         source="agent",
     )
+
+
+def _frontmatter_lines(text: str) -> list[str]:
+    """The page's frontmatter block as lines (empty when the page has none)."""
+    if not text.startswith("---"):
+        return []
+    close = text.find("\n---", 3)
+    if close == -1:
+        return []
+    return text[3:close].strip("\r\n").splitlines()
+
+
+# Pages already counted as read by this process: a session that searches the same
+# page five times must not inflate its weight five times.
+_READ_PAGES: set[str] = set()
+
+
+def _record_page_read(entry: HarnessEntry) -> None:
+    """Count one read of a page: the host owns this field, the agent never writes it."""
+    page = (entry.metadata or {}).get("page")
+    if not page or entry.id in _READ_PAGES:
+        return
+    path = Path(page)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    _fields, body = _split_page(text)
+    try:
+        weight = float(_fields.get("weight") or 0.0)
+    except ValueError:
+        weight = 0.0
+    updates = {
+        "weight": f"{weight + 1.0:g}",
+        "last_read": datetime.now(timezone.utc).date().isoformat(),
+    }
+    lines = ["---", *_merge_frontmatter(_frontmatter_lines(text), updates), "---"]
+    try:
+        path.write_text("\n".join(lines) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    except OSError:
+        return
+    _READ_PAGES.add(entry.id)
 
 
 def memory_pages() -> dict[str, HarnessEntry]:
@@ -782,6 +826,9 @@ class HarnessState:
                         if not isinstance(entry_data.get("metadata"), dict):
                             entry_data["metadata"] = {}
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
+        # Memory is page-backed: the projection replaces whatever the entry store
+        # holds for that kind, so every reader of `entries` sees the pages.
+        entries["memory"] = memory_pages()
         self.entries = entries
 
         self.refinements = []
@@ -823,9 +870,12 @@ class HarnessState:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "schema": 1,
+            # A page-backed kind is never written here: its pages are the store, and
+            # persisting the projection would hand the next load a stale duplicate.
             "entries": {
                 kind: {entry_id: asdict(entry) for entry_id, entry in records.items()}
                 for kind, records in self.entries.items()
+                if kind not in _PAGE_BACKED_KINDS
             },
             "refinements": [asdict(event) for event in self.refinements],
         }
@@ -1622,7 +1672,11 @@ class HarnessState:
 
         ranked = sorted(entries, key=lambda e: (score(e), recency(e)), reverse=True)
         ranked = [e for e in ranked if score(e) > 0]
-        return ranked[:limit]
+        hits = ranked[:limit]
+        for entry in hits:
+            if entry.kind == "memory":
+                _record_page_read(entry)
+        return hits
 
     def snapshot(self, *, global_: bool = False, **kwargs: Any) -> dict[str, Any]:
         if target := self._global_target(global_, kwargs):
