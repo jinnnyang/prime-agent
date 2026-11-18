@@ -59,6 +59,10 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 | `acquire_lock` / `release_lock` | 单 pass 锁，30 分钟视为陈旧 |
 | `append_journal` / `read_journal` | JSONL：visited / compressed / merged / promoted / removed / next_at / why |
 | `dream_prompt(decision)` | 子代理的任务书：允许的动作按优先级排列、抽取式压缩、删除的四条前置、同 pass 证据不能支持删除、预算 24 节点 / 3 轮 |
+| `plan_pass(agent_dir)` | **规则已能决定的动作**：`Promote`（`experience` 且 evidence ≥ 2）、`Remove`（正文 < 120 字符 ∧ 无证据 ∧ 不在任何边端点 ∧ 非 disputed） |
+| `promote_page` / `remove_page` | 执行上一条：前者改 type 为 `observation` 并保留正文；后者归档 + 墓碑。都只在条件成立时动手，否则返回 `false` |
+
+**边界**：`plan_pass` 不含提炼 / 关联 / 抽象 / 合并——那四项需要 pass 的判断，代码只提供前置判定，避免"代码替模型拍板"。
 
 ## 6. 怎么打开 dream（当前默认关闭）
 

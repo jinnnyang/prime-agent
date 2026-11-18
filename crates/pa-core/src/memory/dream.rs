@@ -20,6 +20,8 @@ pub const DREAM_MIN_INTERVAL_SECS: u64 = 6 * 60 * 60;
 pub const DREAM_MAX_INTERVAL_SECS: u64 = 14 * 24 * 60 * 60;
 /// Nodes one pass may look at before it must stop.
 pub const DREAM_NODE_BUDGET: usize = 24;
+/// Below this body length a page carries no conclusion worth keeping.
+pub const REMOVAL_BODY_FLOOR: usize = 120;
 /// A lock older than this is treated as abandoned (a killed pass must not wedge
 /// the store forever).
 pub const DREAM_LOCK_STALE_SECS: u64 = 30 * 60;
@@ -192,6 +194,154 @@ pub fn heartbeat_interval(next_at: u64, now: u64) -> String {
     format!("every {hours}h")
 }
 
+/// A deterministic action a pass may take without judgement: the rules decide,
+/// the model only has to agree it looked at the evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DreamAction {
+    /// `experience` with at least two independent evidence entries.
+    Promote { slug: String, evidence: usize },
+    /// Eligible for removal: short body, no evidence, nothing links to it.
+    Remove { slug: String, body_chars: usize },
+}
+
+/// The actions the rules already justify, given the page store as it is now.
+///
+/// Distillation, relating, abstracting, and merging stay out: they need the
+/// pass's judgement. This list is only what the preconditions decide, so a pass
+/// cannot remove a page the rules would keep.
+#[must_use]
+pub fn plan_pass(agent_dir: &Path) -> Vec<DreamAction> {
+    let pages = load_pages(agent_dir);
+    let linked = connected_slugs(agent_dir);
+    let mut actions = Vec::new();
+    for page in &pages {
+        if page.is_protected() {
+            continue;
+        }
+        if page.kind == "experience" && page.evidence >= 2 {
+            actions.push(DreamAction::Promote {
+                slug: page.slug.clone(),
+                evidence: page.evidence,
+            });
+            continue;
+        }
+        let removable = page.body_chars < REMOVAL_BODY_FLOOR
+            && page.evidence == 0
+            && !linked.contains(&page.slug)
+            && !page.is_disputed();
+        if removable {
+            actions.push(DreamAction::Remove {
+                slug: page.slug.clone(),
+                body_chars: page.body_chars,
+            });
+        }
+    }
+    actions
+}
+
+/// Promotion: an `experience` page becomes `observation` once two independent
+/// pieces of evidence support it.
+///
+/// # Errors
+///
+/// Propagates the read and write failures.
+pub fn promote_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Result<bool> {
+    let Some(page) = load_pages(agent_dir)
+        .into_iter()
+        .find(|page| page.slug == slug)
+    else {
+        return Ok(false);
+    };
+    if page.kind != "experience" || page.evidence < 2 {
+        return Ok(false);
+    }
+    let body = std::fs::read_to_string(&page.path)
+        .ok()
+        .and_then(|text| super::split_frontmatter(&text).map(|(_, body)| body.to_string()))
+        .unwrap_or_default();
+    super::write_page(&super::PageWrite {
+        agent_dir,
+        slug: &page.slug,
+        kind: "observation",
+        title: &page.title,
+        hook: page.hook.as_deref(),
+        status: "active",
+        body: &body,
+        updated: today,
+    })?;
+    Ok(true)
+}
+
+/// Removal, decided by the rules alone: short body, no evidence, no inbound
+/// link. The page is archived, never unlinked.
+///
+/// # Errors
+///
+/// Propagates the read and archive failures.
+pub fn remove_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Result<bool> {
+    let pages = load_pages(agent_dir);
+    let Some(page) = pages.iter().find(|page| page.slug == slug) else {
+        return Ok(false);
+    };
+    let linked = connected_slugs(agent_dir);
+    let eligible = !page.is_protected()
+        && page.body_chars < REMOVAL_BODY_FLOOR
+        && page.evidence == 0
+        && !linked.contains(&page.slug)
+        && !page.is_disputed();
+    if !eligible {
+        return Ok(false);
+    }
+    super::archive_page(agent_dir, slug, today)
+}
+
+/// Slugs that take part in any edge: a page something points at, and a page that
+/// points somewhere. Either end is treated as structural, because removing it
+/// would leave the other end dangling.
+fn connected_slugs(agent_dir: &Path) -> std::collections::BTreeSet<String> {
+    let mut targets = std::collections::BTreeSet::new();
+    let root = super::pages_dir(agent_dir);
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "md") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut has_edge = false;
+            for line in text.lines() {
+                let trimmed = line.trim_start();
+                if let Some(rest) = trimmed.strip_prefix("target:") {
+                    targets.insert(rest.trim().trim_matches('"').trim_matches('\'').to_string());
+                    has_edge = true;
+                } else if let Some(rest) = trimmed.strip_prefix("relations:") {
+                    has_edge = !rest.trim().is_empty();
+                }
+            }
+            if has_edge {
+                if let Some((frontmatter, _)) = super::split_frontmatter(&text) {
+                    if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
+                        if let Some(slug) = value.get("slug").and_then(serde_yaml::Value::as_str) {
+                            targets.insert(slug.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    targets
+}
+
 /// The instruction block the pass is spawned with. Scope, budget, and the
 /// write discipline are stated here because the pass decides its own walk.
 #[must_use]
@@ -310,6 +460,94 @@ mod tests {
         assert_eq!(heartbeat_interval(now + 12 * 3_600, now), "every 12h");
         assert_eq!(heartbeat_interval(now, now), "every 6h");
         assert_eq!(heartbeat_interval(now + 40 * 24 * 3_600, now), "every 336h");
+    }
+
+    #[test]
+    fn promotions_need_two_evidence_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        let write = |slug: &str, kind: &str, evidence: &str, body: &str| {
+            let path = super::super::pages_dir(agent).join(kind);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join(format!("{slug}.md")),
+                format!(
+                    "---\nslug: {slug}\ntype: {kind}\ntitle: {slug}\nstatus: active\n{evidence}---\n\n{body}\n"
+                ),
+            )
+            .unwrap();
+        };
+        write("thin", "experience", "", "one run only");
+        write(
+            "ready",
+            "experience",
+            "evidence:\n  - kind: command\n    ref: a\n  - kind: session\n    ref: b\n",
+            "two runs agree",
+        );
+        let actions = plan_pass(agent);
+        assert!(
+            actions.contains(&DreamAction::Promote {
+                slug: "ready".to_string(),
+                evidence: 2
+            }),
+            "{actions:?}"
+        );
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            DreamAction::Promote { slug, .. } if slug == "thin"
+        )));
+        assert!(promote_page(agent, "ready", "2026-11-17").unwrap());
+        assert!(!promote_page(agent, "thin", "2026-11-17").unwrap());
+        let promoted = load_pages(agent);
+        assert_eq!(
+            promoted
+                .iter()
+                .find(|page| page.slug == "ready")
+                .map(|page| page.kind.as_str()),
+            Some("observation")
+        );
+    }
+
+    #[test]
+    fn removal_needs_a_short_body_no_evidence_and_no_inbound_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        let write = |slug: &str, body: &str, extra: &str| {
+            let path = super::super::pages_dir(agent).join("observation");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join(format!("{slug}.md")),
+                format!("---\nslug: {slug}\ntype: observation\ntitle: {slug}\nstatus: active\n{extra}---\n\n{body}\n"),
+            )
+            .unwrap();
+        };
+        write("tiny", "short", "");
+        write("long", &"x".repeat(200), "");
+        write("cited", "short", "evidence:\n  - kind: quote\n    ref: q\n");
+        write(
+            "linked",
+            "short",
+            "relations:\n  - type: part_of\n    target: proj\n",
+        );
+        let actions = plan_pass(agent);
+        assert!(
+            actions.contains(&DreamAction::Remove {
+                slug: "tiny".to_string(),
+                body_chars: 5
+            }),
+            "{actions:?}"
+        );
+        for slug in ["long", "cited", "linked"] {
+            assert!(
+                !actions.iter().any(|action| matches!(
+                    action,
+                    DreamAction::Remove { slug: found, .. } if found == slug
+                )),
+                "{slug} must not be a removal candidate: {actions:?}"
+            );
+        }
+        assert!(remove_page(agent, "tiny", "2026-11-17").unwrap());
+        assert!(!remove_page(agent, "long", "2026-11-17").unwrap());
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub const MEMORY_TYPES: [&str; 4] = ["world", "model", "observation", "experienc
 pub const MEMORY_DIR_NAME: &str = "memory";
 /// Subdirectory that holds the knowledge pages.
 pub const PAGES_DIR_NAME: &str = "pages";
+/// Directory of structure nodes: real pages, never knowledge units.
+pub const MEMORY_PROTECTED_DIR: &str = "_entities";
 
 /// One page's index-relevant frontmatter. The body is deliberately not read:
 /// the index routes, it does not summarize.
@@ -53,6 +55,24 @@ impl MemoryPage {
     /// contradicted conclusion must not read as settled knowledge.
     fn is_disputed(&self) -> bool {
         matches!(self.status.as_deref(), Some("disputed"))
+    }
+
+    /// Structure nodes and machine-maintained pages are never candidates for a
+    /// consolidation action.
+    #[must_use]
+    pub fn is_protected(&self) -> bool {
+        self.kind == "entity"
+            || self
+                .path
+                .components()
+                .any(|part| part.as_os_str() == MEMORY_PROTECTED_DIR)
+    }
+
+    /// The page body and frontmatter as text, for a writer that must keep the
+    /// fields it does not own.
+    #[must_use]
+    pub fn read_text(&self) -> Option<String> {
+        std::fs::read_to_string(&self.path).ok()
     }
 }
 
@@ -88,7 +108,10 @@ fn collect(dir: &Path, out: &mut Vec<MemoryPage>) {
         if path.is_dir() {
             // `_entities` holds structure nodes: real pages, but not knowledge
             // units, so they never reach the index.
-            if path.file_name().is_some_and(|name| name == "_entities") {
+            if path
+                .file_name()
+                .is_some_and(|name| name == MEMORY_PROTECTED_DIR)
+            {
                 continue;
             }
             collect(&path, out);
