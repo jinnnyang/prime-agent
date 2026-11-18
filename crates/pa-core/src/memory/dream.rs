@@ -44,6 +44,22 @@ pub struct DreamRecord {
     pub why: String,
 }
 
+/// Record a finished pass: take the lock, append the journal line, release the
+/// lock. A pass that writes its record without the lock can race another pass
+/// into the same `next_at`, which is how a store ends up consolidating twice.
+///
+/// # Errors
+///
+/// Propagates the lock and append failures.
+pub fn record_pass(agent_dir: &Path, record: &DreamRecord, now: u64) -> std::io::Result<bool> {
+    if !acquire_lock(agent_dir, now)? {
+        return Ok(false);
+    }
+    let appended = append_journal(agent_dir, record);
+    release_lock(agent_dir);
+    appended.map(|()| true)
+}
+
 /// Whether a pass is due, and the nodes it should start from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DreamDecision {
@@ -155,96 +171,105 @@ fn seeds(pages: &[super::MemoryPage], today: i64) -> Vec<String> {
         .collect()
 }
 
-/// The frontmatter block as lines, ready to be edited and re-joined.
-fn front_lines(text: &str) -> (Vec<String>, String) {
-    match super::split_frontmatter(text) {
-        Some((front, body)) => (
-            front
-                .lines()
-                .map(|line| line.trim_end().to_string())
-                .collect(),
-            body.to_string(),
-        ),
-        None => (Vec::new(), text.to_string()),
+/// A page's frontmatter as a YAML mapping, plus its body.
+///
+/// Edits here work on values, not on lines: the page format allows a list item
+/// at column 0 or indented, and a line-based edit that guesses wrong writes
+/// frontmatter that no longer parses — which silently removes the page from the
+/// index. A missing or unparsable frontmatter is an error, not an empty page.
+fn front_value(text: &str) -> std::io::Result<(serde_yaml::Mapping, String)> {
+    let invalid = |reason: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("page frontmatter {reason}"),
+        )
+    };
+    let (front, body) = super::split_frontmatter(text).ok_or_else(|| invalid("is missing"))?;
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(front).map_err(|_| invalid("is not YAML"))?;
+    let mapping = value
+        .as_mapping()
+        .cloned()
+        .ok_or_else(|| invalid("is not a mapping"))?;
+    Ok((mapping, body.to_string()))
+}
+
+/// The items of a top-level sequence key, or nothing when the page has none.
+fn sequence_items(mapping: &serde_yaml::Mapping, key: &str) -> Vec<serde_yaml::Value> {
+    mapping
+        .get(serde_yaml::Value::String(key.to_string()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Append an item to a top-level sequence key, once.
+fn push_sequence(mapping: &mut serde_yaml::Mapping, key: &str, item: serde_yaml::Value) {
+    let field = serde_yaml::Value::String(key.to_string());
+    match mapping.get_mut(&field) {
+        Some(serde_yaml::Value::Sequence(sequence)) => {
+            if !sequence.contains(&item) {
+                sequence.push(item);
+            }
+        }
+        _ => {
+            mapping.insert(field, serde_yaml::Value::Sequence(vec![item]));
+        }
     }
 }
 
-/// The list entries declared under `key`, so a merge can carry them over.
-fn block_lines(front: &[String], key: &str) -> Vec<String> {
-    let mut collected: Vec<String> = Vec::new();
-    let mut inside = false;
-    for line in front {
-        if line.starts_with(&format!("{key}:")) {
-            inside = true;
-            continue;
-        }
-        if !inside {
-            continue;
-        }
-        if line.starts_with("  - ") || line.starts_with("- ") {
-            collected.push(line.clone());
-        } else if line.starts_with("    ") {
-            // A list entry is a mapping: its remaining fields belong to it, or a
-            // merge would carry the key and drop the proof.
-            if let Some(last) = collected.last_mut() {
-                last.push('\n');
-                last.push_str(line);
-            }
-        } else {
-            inside = false;
-        }
-    }
-    collected
+/// A page's declared relation targets, whatever style the list uses.
+fn relation_targets(text: &str) -> Vec<String> {
+    let Ok((mapping, _)) = front_value(text) else {
+        return Vec::new();
+    };
+    sequence_items(&mapping, "relations")
+        .into_iter()
+        .filter_map(|item| {
+            item.get("target")
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
 }
 
-/// Append one list entry to `key`, creating the key when the page has none.
-fn insert_into_block(front: Vec<String>, key: &str, entry: &str) -> Vec<String> {
-    // The entry keeps its own indentation: YAML needs one list to line up.
-    let entry = entry.trim_end();
-    let mut out: Vec<String> = Vec::with_capacity(front.len() + 2);
-    let mut inserted = false;
-    let mut inside = false;
-    let mut has_key = false;
-    for line in front {
-        let is_entry_start = line.starts_with("  - ") || line.starts_with("- ");
-        let is_continuation = line.starts_with("    ") || line.starts_with('\t');
-        if inside && !is_entry_start && !is_continuation {
-            // Left the block: this is where the new entry belongs.
-            if !inserted {
-                out.push(entry.to_string());
-                inserted = true;
-            }
-            inside = false;
-        }
-        if line.starts_with(&format!("{key}:")) {
-            inside = true;
-            has_key = true;
-        }
-        out.push(line);
-    }
-    if !inserted {
-        if has_key {
-            out.push(entry.to_string());
-        } else {
-            out.push(format!("{key}:"));
-            out.push(format!("  {}", entry.trim_start()));
+/// Point every relation whose target is `from` at `to`; exact matches only, so a
+/// target that merely ends with the slug is left alone.
+fn retarget(mapping: &mut serde_yaml::Mapping, from: &str, to: &str) -> bool {
+    let field = serde_yaml::Value::String("relations".to_string());
+    let Some(relations) = mapping.get_mut(&field) else {
+        return false;
+    };
+    let Some(sequence) = relations.as_sequence_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for relation in sequence {
+        let Some(entry) = relation.as_mapping_mut() else {
+            continue;
+        };
+        let target = serde_yaml::Value::String("target".to_string());
+        if entry.get(&target).and_then(serde_yaml::Value::as_str) == Some(from) {
+            entry.insert(target, serde_yaml::Value::String(to.to_string()));
+            changed = true;
         }
     }
-    out
+    changed
 }
 
 /// Merge `absorb` into `keep`: the pass decides that two pages say the same
-/// thing, this does the writing. Evidence is carried over (so the survivor can
-/// still be promoted on it), body lines survive once, every page that pointed at
-/// the absorbed slug points at the survivor, and the absorbed page is archived
-/// with a tombstone — a merge must never lose where a claim came from.
+/// thing, this does the writing. Evidence and relations are carried over (so the
+/// survivor keeps its proof and its edges), body lines survive once, every page
+/// that pointed at the absorbed slug points at the survivor, and the absorbed
+/// page is archived with a tombstone — a merge must never lose where a claim
+/// came from.
 ///
 /// Returns false when either page is missing, when they are the same page, or
 /// when the absorbed page is protected.
 ///
 /// # Errors
 ///
-/// Propagates read, write and archive failures.
+/// Propagates read, write, archive and unparsable-frontmatter failures.
 pub fn merge_pages(
     agent_dir: &Path,
     keep: &str,
@@ -265,8 +290,8 @@ pub fn merge_pages(
         return Ok(false);
     }
 
-    let (mut front, survivor_body) = front_lines(&std::fs::read_to_string(&survivor.path)?);
-    let (absorbed_front, absorbed_body) = front_lines(&std::fs::read_to_string(&absorbed.path)?);
+    let (mut front, survivor_body) = front_value(&std::fs::read_to_string(&survivor.path)?)?;
+    let (absorbed_front, absorbed_body) = front_value(&std::fs::read_to_string(&absorbed.path)?)?;
 
     // Body: survivor first, then only the absorbed lines that are new.
     let mut lines: Vec<String> = survivor_body
@@ -281,52 +306,39 @@ pub fn merge_pages(
         }
     }
 
-    // Evidence: carry the absorbed entries so the survivor keeps its proof.
-    for entry in block_lines(&absorbed_front, "evidence") {
-        let already = block_lines(&front, "evidence")
-            .iter()
-            .any(|existing| existing.trim() == entry.trim());
-        if !already {
-            front = insert_into_block(front, "evidence", &entry);
-        }
+    for item in sequence_items(&absorbed_front, "evidence") {
+        push_sequence(&mut front, "evidence", item);
+    }
+    for item in sequence_items(&absorbed_front, "relations") {
+        push_sequence(&mut front, "relations", item);
     }
 
+    let front_yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(front))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
     let body = lines.join("\n");
-    std::fs::write(
-        &survivor.path,
-        format!("---\n{}\n---\n\n{body}\n", front.join("\n")),
-    )?;
+    std::fs::write(&survivor.path, format!("---\n{front_yaml}---\n\n{body}\n"))?;
     super::archive_page(agent_dir, absorb, &format!("merged into {keep} ({today})"))?;
 
-    // A dangling reference is worse than a stale one: point every page at the
-    // survivor, not only the pages in the same type.
+    // A dangling reference is worse than a stale one: every page that named the
+    // absorbed slug names the survivor instead.
     for page in load_pages(agent_dir) {
         let Ok(text) = std::fs::read_to_string(&page.path) else {
             continue;
         };
-        let (front, body) = front_lines(&text);
-        let mut changed = false;
-        let rewritten: Vec<String> = front
-            .into_iter()
-            .map(|line| {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("target:") && trimmed.ends_with(absorb) {
-                    changed = true;
-                    return line.replace(absorb, keep);
-                }
-                line
-            })
-            .collect();
-        if changed {
-            std::fs::write(
-                &page.path,
-                format!(
-                    "---\n{}\n---\n\n{}\n",
-                    rewritten.join("\n"),
-                    body.trim_end()
-                ),
-            )?;
+        let Ok((mut front, body)) = front_value(&text) else {
+            continue;
+        };
+        if !retarget(&mut front, absorb, keep) {
+            continue;
         }
+        let front_yaml =
+            serde_yaml::to_string(&serde_yaml::Value::Mapping(front)).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+            })?;
+        std::fs::write(
+            &page.path,
+            format!("---\n{front_yaml}---\n\n{}\n", body.trim_end()),
+        )?;
     }
     Ok(true)
 }
@@ -384,6 +396,22 @@ pub enum DreamAction {
     Remove { slug: String, body_chars: usize },
 }
 
+/// Whether the rules allow removing this page. One source of truth: the plan and
+/// the removal both ask here, because two copies of a destructive rule drift.
+#[must_use]
+pub fn removal_eligible(
+    page: &super::MemoryPage,
+    linked: &std::collections::BTreeSet<String>,
+    today: i64,
+) -> bool {
+    !page.is_protected()
+        && page.body_chars < REMOVAL_BODY_FLOOR
+        && page.evidence == 0
+        && !linked.contains(&page.slug)
+        && !page.is_disputed()
+        && is_aged(page, today)
+}
+
 /// The actions the rules already justify, given the page store as it is now.
 ///
 /// Distillation, relating, abstracting, and merging stay out: they need the
@@ -405,12 +433,7 @@ pub fn plan_pass(agent_dir: &Path, today: i64) -> Vec<DreamAction> {
             });
             continue;
         }
-        let removable = page.body_chars < REMOVAL_BODY_FLOOR
-            && page.evidence == 0
-            && !linked.contains(&page.slug)
-            && !page.is_disputed()
-            && is_aged(page, today);
-        if removable {
+        if removal_eligible(page, &linked, today) {
             actions.push(DreamAction::Remove {
                 slug: page.slug.clone(),
                 body_chars: page.body_chars,
@@ -436,10 +459,15 @@ pub fn promote_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Resul
     if page.kind != "experience" || page.evidence < 2 {
         return Ok(false);
     }
-    let body = std::fs::read_to_string(&page.path)
-        .ok()
-        .and_then(|text| super::split_frontmatter(&text).map(|(_, body)| body.to_string()))
-        .unwrap_or_default();
+    // A failed read must not become an empty body: writing it back would replace
+    // the page's content with nothing.
+    let text = std::fs::read_to_string(&page.path)?;
+    let (_, body) = super::split_frontmatter(&text).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("page {slug} has no frontmatter"),
+        )
+    })?;
     super::write_page(&super::PageWrite {
         agent_dir,
         slug: &page.slug,
@@ -447,7 +475,7 @@ pub fn promote_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Resul
         title: &page.title,
         hook: page.hook.as_deref(),
         status: "active",
-        body: &body,
+        body,
         updated: today,
     })?;
     Ok(true)
@@ -460,19 +488,16 @@ pub fn promote_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Resul
 ///
 /// Propagates the read and archive failures.
 pub fn remove_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Result<bool> {
-    let today_day = iso_day(today).unwrap_or(i64::MAX);
+    // An unreadable date used to mean "old enough": destructive rules fail closed.
+    let Some(today_day) = iso_day(today) else {
+        return Ok(false);
+    };
     let pages = load_pages(agent_dir);
     let Some(page) = pages.iter().find(|page| page.slug == slug) else {
         return Ok(false);
     };
     let linked = connected_slugs(agent_dir);
-    let eligible = !page.is_protected()
-        && page.body_chars < REMOVAL_BODY_FLOOR
-        && page.evidence == 0
-        && !linked.contains(&page.slug)
-        && !page.is_disputed()
-        && is_aged(page, today_day);
-    if !eligible {
+    if !removal_eligible(page, &linked, today_day) {
         return Ok(false);
     }
     super::archive_page(agent_dir, slug, today)
@@ -481,8 +506,11 @@ pub fn remove_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Result
 /// Slugs that take part in any edge: a page something points at, and a page that
 /// points somewhere. Either end is treated as structural, because removing it
 /// would leave the other end dangling.
+///
+/// Targets are read from the parsed relations, so a list written at column 0 or
+/// in flow style protects its targets just like an indented block does.
 fn connected_slugs(agent_dir: &Path) -> std::collections::BTreeSet<String> {
-    let mut targets = std::collections::BTreeSet::new();
+    let mut connected = std::collections::BTreeSet::new();
     let root = super::pages_dir(agent_dir);
     let mut stack = vec![root];
     while let Some(dir) = stack.pop() {
@@ -501,28 +529,22 @@ fn connected_slugs(agent_dir: &Path) -> std::collections::BTreeSet<String> {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let mut has_edge = false;
-            for line in text.lines() {
-                let trimmed = line.trim_start();
-                if let Some(rest) = trimmed.strip_prefix("target:") {
-                    targets.insert(rest.trim().trim_matches('"').trim_matches('\'').to_string());
-                    has_edge = true;
-                } else if let Some(rest) = trimmed.strip_prefix("relations:") {
-                    has_edge = !rest.trim().is_empty();
-                }
+            let targets = relation_targets(&text);
+            if targets.is_empty() {
+                continue;
             }
-            if has_edge {
-                if let Some((frontmatter, _)) = super::split_frontmatter(&text) {
-                    if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter) {
-                        if let Some(slug) = value.get("slug").and_then(serde_yaml::Value::as_str) {
-                            targets.insert(slug.to_string());
-                        }
-                    }
+            connected.extend(targets);
+            if let Ok((front, _)) = front_value(&text) {
+                if let Some(slug) = front
+                    .get(serde_yaml::Value::String("slug".to_string()))
+                    .and_then(serde_yaml::Value::as_str)
+                {
+                    connected.insert(slug.to_string());
                 }
             }
         }
     }
-    targets
+    connected
 }
 
 /// Half-life of the read weight: a page nobody reads fades in about a month.
@@ -598,6 +620,11 @@ pub fn ensure_prompt_file(
     }
     let prompt = dream_prompt(decision);
     let path = prompt_path(agent_dir);
+    // Rendering the digest must not write the same file on every render: the
+    // instruction only changes when the store does.
+    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == prompt) {
+        return Ok(Some(prompt));
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -894,6 +921,126 @@ mod decay_tests {
 
 #[cfg(test)]
 mod merge_tests {
+    #[test]
+    fn a_merge_survives_both_list_styles() {
+        // Column-0 entries and indented entries must both carry, in either
+        // direction: a line-based edit that guesses the indent writes frontmatter
+        // that no longer parses, and the page silently leaves the index.
+        for (keep_style, absorb_style) in [
+            (
+                "  - kind: command\n    ref: a\n",
+                "- kind: issue\n  ref: '#92'\n",
+            ),
+            (
+                "- kind: command\n  ref: a\n",
+                "  - kind: issue\n    ref: '#92'\n",
+            ),
+            (
+                "- kind: command\n  ref: a\n- kind: session\n  ref: s1\n",
+                "- kind: issue\n  ref: '#92'\n",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let agent = dir.path();
+            page(
+                agent,
+                "keep",
+                "body one",
+                &format!("evidence:\n{keep_style}"),
+            );
+            page(
+                agent,
+                "absorb",
+                "body two",
+                &format!("evidence:\n{absorb_style}"),
+            );
+
+            assert!(merge_pages(agent, "keep", "absorb", "2026-11-17").unwrap());
+
+            let text = std::fs::read_to_string(
+                crate::memory::pages_dir(agent)
+                    .join("observation")
+                    .join("keep.md"),
+            )
+            .unwrap();
+            let (front, _) = super::front_value(&text)
+                .unwrap_or_else(|error| panic!("keep.md must still parse: {error}\n{text}"));
+            let evidence = super::sequence_items(&front, "evidence");
+            assert!(
+                evidence
+                    .iter()
+                    .any(|item| item.get("ref").and_then(serde_yaml::Value::as_str) == Some("#92")),
+                "the absorbed proof must survive: {text}"
+            );
+            // The page is still in the index, which is what a parse failure takes away.
+            assert!(load_pages(agent).iter().any(|page| page.slug == "keep"));
+        }
+    }
+
+    #[test]
+    fn a_merge_keeps_the_absorbed_pages_own_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        page(agent, "keep", "body one", "");
+        page(
+            agent,
+            "absorb",
+            "body two",
+            "relations:\n  - type: contradicts\n    target: rival\n",
+        );
+
+        assert!(merge_pages(agent, "keep", "absorb", "2026-11-17").unwrap());
+
+        let text = std::fs::read_to_string(
+            crate::memory::pages_dir(agent)
+                .join("observation")
+                .join("keep.md"),
+        )
+        .unwrap();
+        // Losing an outgoing edge loses the rebuttal that `disputed` depends on.
+        assert!(
+            text.contains("contradicts") && text.contains("target: rival"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_merge_retargets_exactly_and_leaves_lookalikes_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = dir.path();
+        page(agent, "keep", "body one", "");
+        page(agent, "absorb", "body two", "");
+        page(
+            agent,
+            "exact",
+            "b",
+            "relations:\n  - type: depends_on\n    target: absorb\n",
+        );
+        page(
+            agent,
+            "lookalike",
+            "b",
+            "relations:\n  - type: depends_on\n    target: my_absorb_v2\n",
+        );
+
+        assert!(merge_pages(agent, "keep", "absorb", "2026-11-17").unwrap());
+
+        let exact = std::fs::read_to_string(
+            crate::memory::pages_dir(agent)
+                .join("observation")
+                .join("exact.md"),
+        )
+        .unwrap();
+        let lookalike = std::fs::read_to_string(
+            crate::memory::pages_dir(agent)
+                .join("observation")
+                .join("lookalike.md"),
+        )
+        .unwrap();
+        assert!(exact.contains("target: keep"), "{exact}");
+        assert!(lookalike.contains("target: my_absorb_v2"), "{lookalike}");
+    }
+
     use super::*;
 
     fn page(agent: &std::path::Path, slug: &str, body: &str, extra: &str) {

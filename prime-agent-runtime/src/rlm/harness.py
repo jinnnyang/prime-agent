@@ -145,11 +145,28 @@ _MEMORY_ARCHIVE_LOG = "_archive.md"
 _MEMORY_SKIPPED_DIRS = frozenset({"_entities"})
 
 
-def _memory_dir() -> Path:
+def _memory_dir(root: Path | None = None) -> Path:
+    """The memory directory: the caller's when given, else the agent dir's."""
+    if root is not None:
+        return root
     return _agent_dir() / _MEMORY_DIR_NAME
 
 
-def _memory_pages_dir() -> Path:
+def _memory_root_for(state_file: Path | None) -> Path:
+    """Where a state's pages live, derived from the state it belongs to.
+
+    `harness_state.json` sits under `<agent dir>/harness/`, so pages for it are
+    `<agent dir>/memory/`. Following the state instead of the process environment
+    keeps two states in one process from sharing (and corrupting) one page store.
+    """
+    if state_file is None:
+        return _memory_dir()
+    parent = state_file.parent
+    base = parent.parent if parent.name == "harness" else parent
+    return base / _MEMORY_DIR_NAME
+
+
+def _memory_pages_dir(root: Path | None = None) -> Path:
     return _memory_dir() / _MEMORY_PAGES_DIR_NAME
 
 
@@ -173,9 +190,9 @@ def _split_page(text: str) -> tuple[dict[str, str], str]:
     return fields, body
 
 
-def _page_files() -> dict[str, Path]:
+def _page_files(root: Path | None = None) -> dict[str, Path]:
     """slug -> path for every knowledge page on disk (structure nodes skipped)."""
-    root = _memory_pages_dir()
+    root = _memory_pages_dir(root)
     found: dict[str, Path] = {}
     if not root.is_dir():
         return found
@@ -242,6 +259,7 @@ def _write_memory_page(
     hook: str | None = None,
     status: str = "draft",
     merge_path: Path | None = None,
+    root: Path | None = None,
 ) -> Path:
     """Write a page; an existing page keeps every field the caller omits."""
     if page_type not in _MEMORY_TYPES:
@@ -268,23 +286,75 @@ def _write_memory_page(
     if hook is not None:
         updates["hook"] = _yaml_scalar(hook)
     lines = ["---", *_merge_frontmatter(block, updates), "---"]
-    target = _memory_pages_dir() / page_type / f"{slug}.md"
+    target = _memory_pages_dir(root) / page_type / f"{slug}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines) + "\n\n" + content.strip() + "\n", encoding="utf-8")
     return target
 
 
-def _tombstone_memory_page(slug: str, reason: str = "archived") -> bool:
+def _removal_refusal(slug: str, root: Path | None = None) -> str | None:
+    """Why the rules would keep this page, or None when it may be archived.
+
+    The same preconditions `memory::dream::removal_eligible` applies: a page with
+    proof, an edge, a real body, a dispute, or a recent write is not removable,
+    and the kernel must not be the way around that.
+    """
+    files = _page_files(root)
+    path = files.get(slug)
+    if path is None:
+        return "no such page"
+    if any(part in _MEMORY_SKIPPED_DIRS for part in path.parts):
+        return "structure node"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return f"unreadable page: {path}"
+    fields, body = _split_page(text)
+    if _block_entries(_frontmatter_lines(text), "evidence"):
+        return "it carries evidence"
+    if _block_entries(_frontmatter_lines(text), "relations"):
+        return "it declares relations"
+    for other_slug, other in files.items():
+        if other_slug == slug:
+            continue
+        try:
+            other_text = other.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if slug in {
+            line.split("target:", 1)[1].strip().strip("'\"")
+            for line in _frontmatter_lines(other_text)
+            if line.lstrip().startswith("target:")
+        }:
+            return f"{other_slug} points at it"
+    if len(body.strip()) >= 120:
+        return "its body is long enough to keep"
+    updated = fields.get("updated") or ""
+    if len(updated) >= 10:
+        try:
+            written = datetime.fromisoformat(updated[:10]).date()
+        except ValueError:
+            return "its last write date is unreadable"
+        if (datetime.now(timezone.utc).date() - written).days < 14:
+            return "it was written less than two weeks ago"
+    else:
+        return "it has no last-write date"
+    return None
+
+
+def _tombstone_memory_page(
+    slug: str, reason: str = "archived", root: Path | None = None
+) -> bool:
     """Archive a page instead of unlinking it: removal stays reversible."""
-    path = _page_files().get(slug)
+    path = _page_files(root).get(slug)
     if path is None:
         return False
-    archive = _memory_dir() / _MEMORY_ARCHIVE_DIR_NAME
+    archive = _memory_dir(root) / _MEMORY_ARCHIVE_DIR_NAME
     archive.mkdir(parents=True, exist_ok=True)
     fields, _ = _split_page(path.read_text(encoding="utf-8"))
     path.replace(archive / path.name)
     title = fields.get("title", slug)
-    log = _memory_dir() / _MEMORY_ARCHIVE_LOG
+    log = _memory_dir(root) / _MEMORY_ARCHIVE_LOG
     if not log.exists():
         log.write_text("# Archive\n\n", encoding="utf-8")
     with log.open("a", encoding="utf-8") as handle:
@@ -312,7 +382,60 @@ def _front_key_lines(text: str, key: str) -> list[str]:
     return ["\n".join(entry) for entry in entries]
 
 
-def merge_pages(keep: str, absorb: str) -> bool:
+def _reindent(entry: list[str], indent: str) -> list[str]:
+    """The entry respelled in the target list's indentation, structure preserved."""
+    base = len(entry[0]) - len(entry[0].lstrip())
+    return [indent + line[base:] for line in entry]
+
+
+def _block_bounds(block: list[str], key: str) -> tuple[int, int] | None:
+    """Start and end (exclusive) of a top-level key's lines, if the page has it."""
+    start = None
+    for index, line in enumerate(block):
+        if line.startswith(f"{key}:"):
+            start = index
+            break
+    if start is None:
+        return None
+    end = len(block)
+    for index in range(start + 1, len(block)):
+        line = block[index]
+        # A list item at column 0 still belongs to the key above it.
+        if line.strip() and not line.startswith((" ", "\t", "- ")):
+            end = index
+            break
+    return start, end
+
+
+def _block_entries(block: list[str], key: str) -> list[list[str]]:
+    """The list entries under a key, each with its continuation lines.
+
+    Continuations are recognised by indentation, not by a fixed width: a page may
+    write ``- kind: x`` at column 0 with two-space fields, and treating only four
+    spaces as a continuation drops the fields and then the entries after them.
+    """
+    bounds = _block_bounds(block, key)
+    if bounds is None:
+        return []
+    start, end = bounds
+    entries: list[list[str]] = []
+    for line in block[start + 1 : end]:
+        stripped = line.lstrip()
+        if stripped.startswith("- "):
+            entries.append([line])
+        elif entries and line[:1] in (" ", "\t"):
+            entries[-1].append(line)
+        elif stripped:
+            break
+    return entries
+
+
+def _entry_identity(entry: list[str]) -> str:
+    """What makes two evidence entries the same: its lines, whitespace-insensitive."""
+    return " ".join(" ".join(piece.split()) for piece in entry)
+
+
+def merge_pages(keep: str, absorb: str, root: Path | None = None) -> bool:
     """Merge one page into another the pass decided says the same thing.
 
     Body lines survive once, evidence entries carry over with their continuation
@@ -322,28 +445,45 @@ def merge_pages(keep: str, absorb: str) -> bool:
     """
     if keep == absorb:
         return False
-    files = _page_files()
-    kept, absorbed = files.get(keep), files.get(absorb)
-    if kept is None or absorbed is None:
+    files = _page_files(root)
+    kept, absorbed_path = files.get(keep), files.get(absorb)
+    if kept is None or absorbed_path is None:
         return False
-    kept_text = kept.read_text(encoding="utf-8")
-    absorbed_text = absorbed.read_text(encoding="utf-8")
-    kept_fields, kept_body = _split_page(kept_text)
+    try:
+        kept_text = kept.read_text(encoding="utf-8")
+        absorbed_text = absorbed_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
 
-    lines = [line for line in kept_body.splitlines() if line.strip()]
+    lines = [line for line in _split_page(kept_text)[1].splitlines() if line.strip()]
     for line in _split_page(absorbed_text)[1].splitlines():
         if line.strip() and line not in lines:
             lines.append(line)
 
     block = _frontmatter_lines(kept_text)
-    present = {entry.strip() for entry in _front_key_lines(kept_text, "evidence")}
-    for entry in _front_key_lines(absorbed_text, "evidence"):
-        if entry.strip() in present:
-            continue
-        if not any(line.startswith("evidence:") for line in block):
+    present = {_entry_identity(entry) for entry in _block_entries(block, "evidence")}
+    carried = [
+        entry
+        for entry in _block_entries(_frontmatter_lines(absorbed_text), "evidence")
+        if _entry_identity(entry) not in present
+    ]
+    if carried:
+        bounds = _block_bounds(block, "evidence")
+        if bounds is None:
             block.append("evidence:")
-        block.append(entry)
-    _fields_unused, _ = kept_fields, None
+            bounds = (len(block) - 1, len(block))
+        # Into the key's own block, before whatever follows it: appending to the
+        # end of the frontmatter would file the evidence under the next key.
+        insert_at = bounds[1]
+        existing = _block_entries(block, "evidence")
+        target_indent = (
+            existing[0][0][: len(existing[0][0]) - len(existing[0][0].lstrip())]
+            if existing
+            else "  "
+        )
+        block[insert_at:insert_at] = [
+            line for entry in carried for line in _reindent(entry, target_indent)
+        ]
 
     kept.write_text(
         "---\n" + "\n".join(block) + "\n---\n\n" + "\n".join(lines) + "\n",
@@ -351,18 +491,25 @@ def merge_pages(keep: str, absorb: str) -> bool:
     )
     _tombstone_memory_page(absorb, f"merged into {keep}")
 
-    # A dangling reference is worse than a stale one.
-    for slug, path in _page_files().items():
+    # A dangling reference is worse than a stale one: every page that named the
+    # absorbed slug names the survivor instead. Exact match only, so a target
+    # that merely ends with the slug is left alone.
+    for slug, path in _page_files(root).items():
         if slug == absorb:
             continue
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        front = _frontmatter_lines(text)
         rewritten = [
-            line.replace(absorb, keep)
-            if line.lstrip().startswith("target:") and line.rstrip().endswith(absorb)
+            line[: line.index("target:")] + 'target: ' + keep
+            if line.lstrip().startswith("target:")
+            and line.split("target:", 1)[1].strip().strip("'\"") == absorb
             else line
-            for line in _frontmatter_lines(text)
+            for line in front
         ]
-        if rewritten != _frontmatter_lines(text):
+        if rewritten != front:
             _fields, body = _split_page(text)
             path.write_text(
                 "---\n" + "\n".join(rewritten) + "\n---\n\n" + body.strip() + "\n",
@@ -437,11 +584,178 @@ def _record_page_read(entry: HarnessEntry) -> None:
     _READ_PAGES.add(entry.id)
 
 
-def memory_pages() -> dict[str, HarnessEntry]:
+_LEGACY_IMPORT_MARKER = ".legacy-imported"
+_LEGACY_BACKUP_NAME = "harness_state.pre-pages.json"
+
+
+_DREAM_JOURNAL = "journal/dream.log.jsonl"
+_DREAM_LOCK = ".dream.lock"
+_DREAM_LOCK_STALE_SECS = 30 * 60
+_DREAM_MIN_INTERVAL_SECS = 6 * 60 * 60
+_DREAM_MAX_INTERVAL_SECS = 14 * 24 * 60 * 60
+
+
+def _dream_journal_path(root: Path | None = None) -> Path:
+    return _memory_dir(root) / _DREAM_JOURNAL
+
+
+def dream_due(root: Path | None = None) -> tuple[bool, str]:
+    """Whether a consolidation pass is due, read from the journal the pass writes.
+
+    Mirrors `memory::dream::dream_due`: no pages means nothing to consolidate, and
+    a recorded `next_at` in the future means the pass chose to wait.
+    """
+    if not _page_files(root):
+        return False, "no pages"
+    try:
+        text = _dream_journal_path().read_text(encoding="utf-8")
+    except OSError:
+        return True, "no pass recorded yet"
+    records = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    if not records:
+        return True, "no pass recorded yet"
+    next_at = records[-1].get("next_at")
+    now = int(datetime.now(timezone.utc).timestamp())
+    if isinstance(next_at, (int, float)) and next_at > now:
+        return False, f"next pass at {datetime.fromtimestamp(next_at, timezone.utc).isoformat()}"
+    return True, "the last pass is ready for another"
+
+
+def record_dream_pass(
+    *,
+    root: Path | None = None,
+    visited: int = 0,
+    merged: int = 0,
+    promoted: int = 0,
+    removed: int = 0,
+    compressed: int = 0,
+    why: str = "",
+    next_hours: int = 12,
+    seed: str = "pass",
+) -> dict[str, Any]:
+    """Record a finished consolidation pass and when it wants to run again.
+
+    The pass cannot simply say "recorded": `dream_due` reads this file, so without
+    it the store is due again on the very next render. The interval is clamped to
+    the same floor and ceiling the design states, and the lock keeps two passes
+    from writing competing `next_at` values.
+    """
+    now = int(datetime.now(timezone.utc).timestamp())
+    hours = max(next_hours, _DREAM_MIN_INTERVAL_SECS // 3600)
+    next_at = now + min(hours * 3600, _DREAM_MAX_INTERVAL_SECS)
+    record = {
+        "ts": now,
+        "seed": seed,
+        "visited": visited,
+        "compressed": compressed,
+        "merged": merged,
+        "promoted": promoted,
+        "removed": removed,
+        "next_at": next_at,
+        "why": why,
+    }
+    memory_dir = _memory_dir(root)
+    lock = memory_dir / _DREAM_LOCK
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if lock.exists() and now - int(lock.read_text(encoding="utf-8").strip() or 0) < _DREAM_LOCK_STALE_SECS:
+            raise RuntimeError("a consolidation pass holds the lock")
+    except (OSError, ValueError):
+        pass
+    lock.write_text(f"{now}\n", encoding="utf-8")
+    try:
+        journal = _dream_journal_path()
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        with journal.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+    finally:
+        lock.unlink(missing_ok=True)
+    return record
+
+
+def _refuse_local_memory(global_: bool) -> None:
+    """Memory pages have one scope; say so instead of writing a global page."""
+    if not global_:
+        raise ValueError(
+            "memory pages are global: pass global_=True (a session-local memory "
+            "would be visible to every other session)"
+        )
+
+
+def _legacy_import_marker(root: Path | None = None) -> Path:
+    return _memory_dir(root) / _LEGACY_IMPORT_MARKER
+
+
+def _import_legacy_memory(
+    stored: dict[str, HarnessEntry], state_file: Path | None, root: Path | None = None
+) -> int:
+    """Carry entries written before pages existed into the page store, once.
+
+    The old store cannot keep its memory kind: a page is the truth now. But an
+    upgrade must not read as a deletion, so the entries become pages first, the
+    state file is backed up, and only then does `save()` stop writing that kind.
+    Running twice is harmless: the marker stops the second pass, and a store that
+    already has pages is left alone rather than merged into.
+    """
+    if not stored or _legacy_import_marker(root).exists() or memory_pages(root):
+        return 0
+    if state_file is not None and state_file.exists():
+        backup = state_file.with_name(_LEGACY_BACKUP_NAME)
+        try:
+            backup.write_bytes(state_file.read_bytes())
+        except OSError:
+            # No backup means no permission to destroy the originals.
+            return 0
+    imported = 0
+    for entry_id, entry in stored.items():
+        metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+        page_type = str(metadata.get("type") or _MEMORY_DEFAULT_TYPE)
+        if page_type not in _MEMORY_TYPES:
+            page_type = _MEMORY_DEFAULT_TYPE
+        try:
+            _write_memory_page(
+                entry_id,
+                page_type=page_type,
+                title=entry.title,
+                content=entry.content,
+                hook=metadata.get("hook") or entry.title,
+                status="active",
+                root=root,
+            )
+        except (OSError, ValueError):
+            continue
+        imported += 1
+    marker = _legacy_import_marker(root)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "imported": imported,
+                    "of": len(stored),
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        return imported
+    return imported
+
+
+def memory_pages(root: Path | None = None) -> dict[str, HarnessEntry]:
     """Every knowledge page as an entry, for read tools that predate pages."""
     return {
         slug: _memory_page_entry(slug, path)
-        for slug, path in sorted(_page_files().items())
+        for slug, path in sorted(_page_files(root).items())
     }
 
 
@@ -735,6 +1049,8 @@ class HarnessState:
         # store; reads and global_=True delegation keep working.
         self._local_write_error = local_write_error
         self.entries: dict[HarnessKind, dict[str, HarnessEntry]] = {kind: {} for kind in _KINDS}
+        # Entries the page store has not taken over yet: written back on save.
+        self._legacy_memory: dict[str, HarnessEntry] = {}
         self.refinements: list[RefinementEvent] = []
         self._global_target_state_dir: Path | None = None
         # mtime of the file as of the last load/save, used to detect out-of-process
@@ -745,6 +1061,27 @@ class HarnessState:
         # introspection while disabled; every actual read/write still checks the gate.
         if not in_memory:
             self.load()
+
+    @property
+    def _memory_root(self) -> Path:
+        """Where this state's pages live: beside the state, not in the process env."""
+        return _memory_root_for(self.file_path)
+
+    def _require_page_store(self) -> None:
+        """An in-memory state has no page store, and must not borrow the env one."""
+        if self.file_path is None:
+            raise RuntimeError(
+                "memory pages need an agent directory: this state is in memory only"
+            )
+
+    def _sync_page_backed(self) -> None:
+        """Re-read the page-backed kinds: their truth is on disk, not in this dict."""
+        for kind in _PAGE_BACKED_KINDS:
+            self.entries[kind] = memory_pages(self._memory_root)
+
+    def _route_page_backed(self, kind: HarnessKind) -> bool:
+        """Whether this kind is handled by the page store rather than the entry map."""
+        return kind in _PAGE_BACKED_KINDS
 
     def _ensure_local_writable(self) -> None:
         _require_refinements_enabled()
@@ -906,8 +1243,16 @@ class HarnessState:
                             entry_data["metadata"] = {}
                         entries[kind][str(entry_id)] = HarnessEntry(**entry_data)
         # Memory is page-backed: the projection replaces whatever the entry store
-        # holds for that kind, so every reader of `entries` sees the pages.
-        entries["memory"] = memory_pages()
+        # holds for that kind, so every reader of `entries` sees the pages. What
+        # the store still holds is carried over first, and kept untouched when it
+        # cannot be — a lost import must not read as a lost memory.
+        stored_memory = dict(entries["memory"])
+        if self.file_path is not None:
+            _import_legacy_memory(stored_memory, self.file_path, self._memory_root)
+        self._legacy_memory = (
+            {} if _legacy_import_marker(self._memory_root).exists() else stored_memory
+        )
+        entries["memory"] = memory_pages(self._memory_root)
         self.entries = entries
 
         self.refinements = []
@@ -949,12 +1294,20 @@ class HarnessState:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "schema": 1,
-            # A page-backed kind is never written here: its pages are the store, and
-            # persisting the projection would hand the next load a stale duplicate.
+            # A page-backed kind is not written here once its pages are: its pages
+            # are the store, and persisting the projection would hand the next load
+            # a stale duplicate. Until the import has happened, the entries the
+            # file already holds are written back verbatim, not dropped.
             "entries": {
-                kind: {entry_id: asdict(entry) for entry_id, entry in records.items()}
+                kind: {
+                    entry_id: asdict(entry)
+                    for entry_id, entry in (
+                        self._legacy_memory.items()
+                        if kind in _PAGE_BACKED_KINDS
+                        else records.items()
+                    )
+                }
                 for kind, records in self.entries.items()
-                if kind not in _PAGE_BACKED_KINDS
             },
             "refinements": [asdict(event) for event in self.refinements],
         }
@@ -1120,6 +1473,7 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.get(kind, id)
         self._sync_from_disk()
+        self._sync_page_backed()
         if kind not in self.entries:
             raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
         return self.entries[kind].get(id)
@@ -1128,6 +1482,9 @@ class HarnessState:
         id, global_ = _strip_scope_prefix(id, global_)
         if target := self._global_target(global_, kwargs):
             return target.delete(kind, id)
+        if self._route_page_backed(kind):
+            self._require_page_store()
+            return self.delete_memory(id, global_=global_)
         self._ensure_local_writable()
         with self._locked():
             if kind not in self.entries:
@@ -1142,6 +1499,7 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.list(kind)
         self._sync_from_disk()
+        self._sync_page_backed()
         kinds = [kind] if kind else list(_KINDS)
         records: list[HarnessEntry] = []
         for current_kind in kinds:
@@ -1179,6 +1537,15 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
+        if self._route_page_backed(kind):
+            return self.create_memory(
+                title,
+                content,
+                id=id,
+                path=path,
+                metadata=metadata,
+                global_=global_,
+            )
         with self._locked():
             if kind not in self.entries:
                 raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
@@ -1229,6 +1596,16 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
+        if self._route_page_backed(kind):
+            self._require_page_store()
+            return self.update_memory(
+                id,
+                title,
+                content,
+                path=path,
+                metadata=metadata,
+                global_=global_,
+            )
         with self._locked():
             if kind not in self.entries:
                 raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
@@ -1255,7 +1632,7 @@ class HarnessState:
         id: str | None = None,
         path: str = "general",
         metadata: dict[str, Any] | None = None,
-        global_: bool = False,
+        global_: bool = True,
         type: str | None = None,
         hook: str | None = None,
         **kwargs: Any,
@@ -1267,7 +1644,12 @@ class HarnessState:
         ``type`` decides how long the page stays worth reading and defaults to
         ``experience`` (one session's record); ``hook`` is the routing line the
         digest shows. The digest index picks the page up on the next render.
+
+        Pages are global: there is one store, shared by every session. A caller
+        asking for a session-local memory is refused rather than quietly given a
+        global one — a scope that silently widens is worse than an error.
         """
+        _refuse_local_memory(global_)
         if target := self._global_target(global_, kwargs):
             return target.create_memory(
                 title,
@@ -1281,6 +1663,7 @@ class HarnessState:
                 **kwargs,
             )
         self._ensure_local_writable()
+        self._require_page_store()
         _require_text("memory", title, "title", title)
         slug = id or _slug(title, "memory")
         _require_text("memory", _describe_entry(slug, title), "id", slug)
@@ -1297,7 +1680,8 @@ class HarnessState:
             content=content,
             hook=page_hook,
             status="draft",
-            merge_path=_page_files().get(slug),
+            merge_path=_page_files(self._memory_root).get(slug),
+            root=self._memory_root,
         )
         return _memory_page_entry(slug, page)
 
@@ -1325,10 +1709,11 @@ class HarnessState:
                 **kwargs,
             )
         self._ensure_local_writable()
-        pages = _page_files()
+        self._require_page_store()
+        pages = _page_files(self._memory_root)
         page = pages.get(id)
         if page is None:
-            raise KeyError(f"memory page {id!r} not found under {_memory_pages_dir()}")
+            raise KeyError(f"memory page {id!r} not found under {_memory_pages_dir(self._memory_root)}")
         page_type = (metadata or {}).get("type") or page.parent.name or _MEMORY_DEFAULT_TYPE
         if page_type not in _MEMORY_TYPES:
             page_type = _MEMORY_DEFAULT_TYPE
@@ -1340,6 +1725,7 @@ class HarnessState:
             hook=hook,
             status="active",
             merge_path=page,
+            root=self._memory_root,
         )
         return _memory_page_entry(id, written)
 
@@ -1354,12 +1740,25 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.delete_memory(id, global_=True, **kwargs)
         self._ensure_local_writable()
-        return _tombstone_memory_page(id)
+        self._require_page_store()
+        refusal = _removal_refusal(id, self._memory_root)
+        if refusal is not None:
+            raise ValueError(f"memory page {id!r} cannot be removed: {refusal}")
+        return _tombstone_memory_page(id, root=self._memory_root)
+
+    def record_dream_pass(self, **kwargs: Any) -> dict[str, Any]:
+        """Record a finished consolidation pass; see `record_dream_pass`."""
+        _require_refinements_enabled()
+        return record_dream_pass(root=self._memory_root, **kwargs)
+
+    def dream_due(self) -> tuple[bool, str]:
+        """Whether a consolidation pass is due, from the journal."""
+        return dream_due(self._memory_root)
 
     def merge_pages(self, keep: str, absorb: str) -> bool:
         """Merge the page `absorb` into `keep`; false when either page is gone."""
         _require_refinements_enabled()
-        return merge_pages(keep, absorb)
+        return merge_pages(keep, absorb, self._memory_root)
 
     def create_prompt_note(
         self,
@@ -1766,6 +2165,7 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.snapshot()
         self._sync_from_disk()
+        self._sync_page_backed()
         return {
             "file_path": str(self.file_path),
             "scope": self.scope,

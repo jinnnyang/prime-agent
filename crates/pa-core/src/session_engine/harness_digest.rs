@@ -142,6 +142,15 @@ fn render_digest_with_fingerprint(
         },
     );
     let entries_fingerprint = harness_digest_fingerprint(&merged, render_flags);
+    // The due note is part of the render, so it is part of what the fingerprint
+    // covers: a digest that only changed by gaining (or losing) the note would
+    // otherwise be treated as unchanged and never delivered.
+    let due_note = dream_due_note(context).unwrap_or_default();
+    let entries_fingerprint = if due_note.is_empty() {
+        entries_fingerprint
+    } else {
+        format!("{entries_fingerprint}|{due_note}")
+    };
     match index {
         None => HarnessDigestRender {
             digest: entries_digest,
@@ -152,7 +161,7 @@ fn render_digest_with_fingerprint(
                 "{entries_digest}\n{}{}{}",
                 memory_index_preamble(),
                 index.text,
-                dream_due_note(context).unwrap_or_default()
+                due_note
             ),
             state_fingerprint: crate::refinement::ranking::page_index_fingerprint(
                 &index.fingerprint,
