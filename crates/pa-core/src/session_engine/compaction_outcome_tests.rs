@@ -1110,6 +1110,7 @@ async fn refinement_preserves_provider_prefix_and_completed_state_across_resume(
         crate::refinement::load_harness_state(&global_dir, crate::refinement::HarnessScope::Global);
     assert_eq!(committed.refinements.len(), 1);
     let harness = super::harness_digest::HarnessDigestContext {
+        dream_hint: crate::session_engine::harness_digest::DreamHint::Silent,
         agent_dir: None,
         entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
         global_dir: global_dir.clone(),

@@ -363,6 +363,7 @@ async fn execute_compaction_attaches_harness_digest_snapshot() {
     // harness state exists yet.
     let inputs = super::super::harness_digest::HarnessDigestInputs {
         context: super::super::harness_digest::HarnessDigestContext {
+            dream_hint: crate::session_engine::harness_digest::DreamHint::Silent,
             agent_dir: None,
             entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
             global_dir: global_dir.clone(),
@@ -452,6 +453,7 @@ async fn execute_compaction_attaches_harness_digest_snapshot() {
     // move the fingerprint; a real content change must.
     let inputs = super::super::harness_digest::HarnessDigestInputs {
         context: super::super::harness_digest::HarnessDigestContext {
+            dream_hint: crate::session_engine::harness_digest::DreamHint::Silent,
             agent_dir: None,
             entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
             global_dir,

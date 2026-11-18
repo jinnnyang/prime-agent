@@ -139,6 +139,7 @@ async fn an_unknown_skill_command_passes_through() {
 async fn digest_session(provider: Arc<ScriptedProvider>) -> (AgentSession, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let harness = crate::session_engine::harness_digest::HarnessDigestContext {
+        dream_hint: crate::session_engine::harness_digest::DreamHint::Silent,
         agent_dir: None,
         entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
         global_dir: tmp.path().join("harness"),
@@ -272,6 +273,7 @@ async fn resume_dedupes_by_state_fingerprint_and_appends_stale_digest_update() {
     }
     crate::refinement::save_harness_state(&harness_dir, &state).unwrap();
     let harness = crate::session_engine::harness_digest::HarnessDigestContext {
+        dream_hint: crate::session_engine::harness_digest::DreamHint::Silent,
         agent_dir: None,
         entries_per_kind: crate::refinement::DEFAULT_OVERVIEW_ENTRY_LIMIT,
         global_dir: harness_dir.clone(),

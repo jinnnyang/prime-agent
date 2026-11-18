@@ -45,6 +45,8 @@ pub struct HarnessDigestContext {
     /// Entries listed per kind before the `+N more` line (settings-driven,
     /// resolved through [`crate::refinement::digest_entries_per_kind`]).
     pub entries_per_kind: usize,
+    /// Whether the digest may announce that a consolidation pass is due.
+    pub dream_hint: DreamHint,
     /// Global harness state directory (`<agent dir>/harness`).
     pub global_dir: PathBuf,
     /// Session-local harness state directory (session artifact dir), when the
@@ -147,9 +149,10 @@ fn render_digest_with_fingerprint(
         },
         Some(index) => HarnessDigestRender {
             digest: format!(
-                "{entries_digest}\n{}{}",
+                "{entries_digest}\n{}{}{}",
                 memory_index_preamble(),
-                index.text
+                index.text,
+                dream_due_note(context).unwrap_or_default()
             ),
             state_fingerprint: crate::refinement::ranking::page_index_fingerprint(
                 &index.fingerprint,
@@ -158,6 +161,31 @@ fn render_digest_with_fingerprint(
             ),
         },
     }
+}
+
+/// The consolidation hint: when a pass is due, write its instruction file and say
+/// one line about it, so the session runs the pass instead of the digest carrying
+/// the whole instruction every turn.
+fn dream_due_note(context: &HarnessDigestContext) -> Option<String> {
+    if context.dream_hint == DreamHint::Silent {
+        return None;
+    }
+    let agent_dir = context.agent_dir.as_deref()?;
+    let now = crate::cron::store::now_millis() / 1_000;
+    let decision = crate::memory::dream::dream_due(agent_dir, now);
+    crate::memory::dream::ensure_prompt_file(agent_dir, &decision).ok()??;
+    Some(format!(
+        "\nMemory consolidation is due ({}). Read `memory/DREAM.md`, then spawn ONE subagent whose task is that file's content. It records what it did in `memory/journal/dream.log.jsonl`.\n",
+        decision.reason
+    ))
+}
+
+/// Whether the digest may spend a line saying a consolidation pass is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DreamHint {
+    #[default]
+    Enabled,
+    Silent,
 }
 
 /// Digest inputs captured from the live session; the disk read happens at
