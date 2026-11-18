@@ -598,7 +598,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .harness
             .as_ref()
             .and_then(|harness| harness.dream_due_hint)
-            .unwrap_or(true)
+            .unwrap_or(false)
         {
             super::harness_digest::DreamHint::Enabled
         } else {

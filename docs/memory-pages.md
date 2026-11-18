@@ -34,13 +34,27 @@ title: "Page-backed memory"
 
 | 入口 | 行为 |
 |---|---|
-| `rlm.harness.create_memory(title, content, *, type=, hook=, id=)` | 写 `<type>/<slug>.md`，`type` 默认 `experience`，`status: draft` |
+| `rlm.harness.create_memory(title, content, *, type=, hook=, id=)` | 写 `<type>/<slug>.md`，`type` 默认 `experience`，`status: draft`。页是**全局**的：`global_=False` 会抛 `ValueError`，不会把会话内记忆悄悄变成跨会话记忆 |
 | `rlm.harness.update_memory(id, ...)` | 重写正文，**保留调用方没给的 frontmatter 字段**（`evidence` 块、`weight` 等） |
-| `rlm.harness.delete_memory(id)` | 归档 + 墓碑（不 unlink）。语义上删除属于 dream |
-| `rlm.harness.search(query)` | 搜索包含页；短查询（ASCII < 3 字符）**报错**而不是静默返回空 |
+| `rlm.harness.delete_memory(id)` | 先按 §4 的规则校验，再归档 + 墓碑（不 unlink）；不合格时抛 `ValueError` 并说明原因 |
+| `rlm.harness.merge_pages(keep, absorb)` | 合并两页（pass 判定同一结论后调用）：正文去重、`evidence` 与 `relations` 按 YAML 值搬过去、引用精确改指幸存页、被并页归档 |
+| `rlm.harness.record_dream_pass(visited=, next_hours=, ...)` | 记一次 pass：写 journal 行（含 `next_at`），拿锁→写→放锁；间隔夹在 6h–14d |
+| `rlm.harness.dream_due()` | `(是否到期, 原因)`，读 journal 的 `next_at` |
+| `rlm.harness.search(query)` | 搜索包含页；「没有可搜索词」的查询（ASCII < 3 字符、非 CJK 单字、只有标点）**报错**而不是静默返回空 |
 | `rlm.harness.overview()` | memory 段显示为 `page-backed` 计数与 hook |
 
+**页目录跟着 state 走**：`HarnessState(<x>/harness/harness_state.json)` 的页在 `<x>/memory/pages`。所以临时目录里的 state 天然隔离，不会写进真实 `~/.prime/agent`。`in_memory=True` 的 state 没有页库，写 memory 直接抛 `RuntimeError`。
+
 refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::apply_refinement_proposal` 带 `pages_dir`），local 作用域不写，避免会话内改动跨会话存储。
+
+### 3b. 从旧条目迁移
+
+`harness_state.json` 里已有的 `entries.memory` 是一笔要还的旧账：
+
+1. `load()` 时若页库为空且条目里有 memory，把每条写成页（`type` 取条目的 `metadata.type`，缺省 `experience`；`hook` 取标题）。
+2. 写页前先把 state 文件复制成 `harness_state.pre-pages.json`；**备份失败就不迁移**。
+3. 迁移成功后写 `<agent dir>/memory/.legacy-imported`（含条数与时间）。
+4. `save()` 只在标记存在时才停止写这个 kind；否则把文件里原有的 memory 条目**原样写回**，绝不静默丢弃。
 
 ## 4. 提示词
 
@@ -60,6 +74,7 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 | `append_journal` / `read_journal` | JSONL：visited / compressed / merged / promoted / removed / next_at / why |
 | `dream_prompt(decision)` | 子代理的任务书：允许的动作按优先级排列、抽取式压缩、删除的四条前置、同 pass 证据不能支持删除、预算 24 节点 / 3 轮 |
 | `plan_pass(agent_dir)` | **规则已能决定的动作**：`Promote`（`experience` 且 evidence ≥ 2）、`Remove`（正文 < 120 字符 ∧ 无证据 ∧ 不在任何边端点 ∧ 非 disputed） |
+| `removal_eligible(page, links, today)` | **唯一的删除判据**：plan 与执行都调它（正文 < 120 字符 ∧ 无证据 ∧ 不是任何 relations 端点（出入双向）∧ 非 disputed ∧ 最近写入 ≥ 14 天）。日期不可解析时 fail-closed |
 | `merge_pages(keep, absorb)` | 由 pass 判定「两页同一结论」，代码只负责写：正文去重、证据带续行搬过去、所有 `target:` 改指存活页、被并页归档并记 `merged into <slug>`。同页 / 缺页 / `_entities` 拒绝 |
 | `promote_page` / `remove_page` | 执行上一条：前者改 type 为 `observation` 并保留正文；后者归档 + 墓碑。都只在条件成立时动手，否则返回 `false` |
 
@@ -84,7 +99,9 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 | 项 | 状态 |
 |---|---|
 | daemon 级调度（不依赖会话活着） | 未做，需要 cron store 的 agent 级分区（评审 F1–F5） |
-| `compress` / `abstract` 的执行 | 只有提示词（需要 pass 的下判断）；`merge` 已有代码（`merge_pages`，Rust + kernel 两处） |
-| `get_harness_state` 的页投影 | ✅ load 时投影、save 时排除（`d8ee6ebee`） |
-| `weight` 的宿主统计 | ✅ `search` 命中按进程计一次（`d8ee6ebee`） |
-| 归因：`evidence` 的存在性校验 | 未做（只解析条数） |
+| `compress` / `abstract` 的执行 | 只有提示词（需要 pass 的下判断） |
+| 页写入的原子性 | 未做：`write_page` 仍是原地截断写，崩在半路会留下不可解析的页 |
+| 页的本地作用域 | 未做：只有全局一份页库，local 请求被明确拒绝 |
+| 写页路径注入 | 未做：`slug` 未校验字符集 |
+| 归因：`evidence` 的引用存在性校验 | 未做（只解析条数） |
+| kernel 与 Rust 两份写实现 | 未合并：评审建议把 kernel 的写退化成只读投影，写统一走 Rust |
