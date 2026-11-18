@@ -375,14 +375,14 @@ pub fn apply_refinement_proposal(
                 .to_string();
             let today = crate::cron::store::iso_from_millis(crate::cron::store::now_millis());
             let date = today.get(..10).unwrap_or(today.as_str()).to_string();
+            // Removal is the consolidation pass's decision, not refinement's: a
+            // refine edit that asks to delete a page is refused here instead of
+            // becoming a second, rule-free path to the same archive.
+            let refusal = "refinement does not remove memory pages";
             let outcome = if action == RefinementAction::Delete {
-                crate::memory::archive_page(agent_dir, &id, &date).map(|removed| {
-                    if removed {
-                        Ok(())
-                    } else {
-                        Err(format!("memory page {id:?} not found"))
-                    }
-                })
+                Ok(Err(format!(
+                    "{refusal}: {id:?} stays (removal belongs to the consolidation pass)"
+                )))
             } else {
                 {
                     let title = edit.title.clone().unwrap_or_else(|| id.clone());

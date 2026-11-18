@@ -708,6 +708,66 @@ def record_dream_pass(
     return record
 
 
+def cli_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
+    """One memory operation, driven by `prime-agent memory` from the host CLI.
+
+    The kernel owns the page rules; the CLI is a thin caller, so the two sides
+    cannot disagree about when a page may be removed or what a merge carries.
+    Returns `{"ok": bool, ...}`; a refused action carries its reason verbatim.
+    """
+    op = str(payload.get("op") or "")
+    root = Path(payload["agent_dir"]) / _MEMORY_DIR_NAME if payload.get("agent_dir") else None
+    try:
+        if op == "status":
+            pages = _page_files(root)
+            due, reason = dream_due(root)
+            kinds = sorted({path.parent.name for path in pages.values()})
+            return {"ok": True, "pages": len(pages), "kinds": kinds, "due": due, "reason": reason}
+        if op == "due":
+            due, reason = dream_due(root)
+            return {"ok": True, "due": due, "reason": reason}
+        if op == "plan":
+            promote, remove = [], []
+            for slug, path in _page_files(root).items():
+                entry = _memory_page_entry(slug, path)
+                fields, body = _split_page(path.read_text(encoding="utf-8"))
+                if fields.get("type") == "experience" and _block_entries(
+                    _frontmatter_lines(path.read_text(encoding="utf-8")), "evidence"
+                ):
+                    pieces = _block_entries(_frontmatter_lines(path.read_text(encoding="utf-8")), "evidence")
+                    if len(pieces) >= 2:
+                        promote.append(slug)
+                if _removal_refusal(slug, root) is None:
+                    remove.append(slug)
+            return {"ok": True, "promote": sorted(promote), "remove": sorted(remove)}
+        if op == "merge":
+            keep, absorb = str(payload.get("keep") or ""), str(payload.get("absorb") or "")
+            merged = merge_pages(keep, absorb, root)
+            return {"ok": merged, "merged": merged, "keep": keep, "absorb": absorb}
+        if op == "delete":
+            slug = str(payload.get("slug") or "")
+            refusal = _removal_refusal(slug, root)
+            if refusal is not None:
+                return {"ok": False, "errors": [f"memory page {slug!r} cannot be removed: {refusal}"]}
+            return {"ok": _tombstone_memory_page(slug, "removed", root=root), "removed": slug}
+        if op == "record-pass":
+            record = record_dream_pass(
+                root=root,
+                visited=int(payload.get("visited") or 0),
+                merged=int(payload.get("merged") or 0),
+                promoted=int(payload.get("promoted") or 0),
+                removed=int(payload.get("removed") or 0),
+                compressed=int(payload.get("compressed") or 0),
+                why=str(payload.get("why") or ""),
+                next_hours=int(payload.get("next_hours") or 12),
+                seed=str(payload.get("seed") or "pass"),
+            )
+            return {"ok": True, "record": record}
+        return {"ok": False, "errors": [f"unknown memory op {op!r}"]}
+    except (OSError, ValueError, RuntimeError, KeyError) as error:
+        return {"ok": False, "errors": [str(error)]}
+
+
 def _refuse_local_memory(global_: bool) -> None:
     """Memory pages have one scope; say so instead of writing a global page."""
     if not global_:
