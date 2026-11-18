@@ -274,7 +274,7 @@ def _write_memory_page(
     return target
 
 
-def _tombstone_memory_page(slug: str) -> bool:
+def _tombstone_memory_page(slug: str, reason: str = "archived") -> bool:
     """Archive a page instead of unlinking it: removal stays reversible."""
     path = _page_files().get(slug)
     if path is None:
@@ -288,7 +288,86 @@ def _tombstone_memory_page(slug: str) -> bool:
     if not log.exists():
         log.write_text("# Archive\n\n", encoding="utf-8")
     with log.open("a", encoding="utf-8") as handle:
-        handle.write(f"- {slug} — {title} (archived {datetime.now(timezone.utc).date().isoformat()})\n")
+        stamp = datetime.now(timezone.utc).date().isoformat()
+        handle.write(f"- {slug} — {title} ({reason} {stamp})\n")
+    return True
+
+
+def _front_key_lines(text: str, key: str) -> list[str]:
+    """The list entries under a frontmatter key, each with its continuation lines."""
+    entries: list[list[str]] = []
+    inside = False
+    for line in _frontmatter_lines(text):
+        if line.startswith(f"{key}:"):
+            inside = True
+            continue
+        if not inside:
+            continue
+        if line.startswith("  - ") or line.startswith("- "):
+            entries.append([line])
+        elif line.startswith("    ") and entries:
+            entries[-1].append(line)
+        else:
+            inside = False
+    return ["\n".join(entry) for entry in entries]
+
+
+def merge_pages(keep: str, absorb: str) -> bool:
+    """Merge one page into another the pass decided says the same thing.
+
+    Body lines survive once, evidence entries carry over with their continuation
+    lines, references that pointed at the absorbed slug follow the survivor, and
+    the absorbed page is archived with a tombstone. A merge must never lose where
+    a claim came from, which is why it is this function and not a hand edit.
+    """
+    if keep == absorb:
+        return False
+    files = _page_files()
+    kept, absorbed = files.get(keep), files.get(absorb)
+    if kept is None or absorbed is None:
+        return False
+    kept_text = kept.read_text(encoding="utf-8")
+    absorbed_text = absorbed.read_text(encoding="utf-8")
+    kept_fields, kept_body = _split_page(kept_text)
+
+    lines = [line for line in kept_body.splitlines() if line.strip()]
+    for line in _split_page(absorbed_text)[1].splitlines():
+        if line.strip() and line not in lines:
+            lines.append(line)
+
+    block = _frontmatter_lines(kept_text)
+    present = {entry.strip() for entry in _front_key_lines(kept_text, "evidence")}
+    for entry in _front_key_lines(absorbed_text, "evidence"):
+        if entry.strip() in present:
+            continue
+        if not any(line.startswith("evidence:") for line in block):
+            block.append("evidence:")
+        block.append(entry)
+    _fields_unused, _ = kept_fields, None
+
+    kept.write_text(
+        "---\n" + "\n".join(block) + "\n---\n\n" + "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+    _tombstone_memory_page(absorb, f"merged into {keep}")
+
+    # A dangling reference is worse than a stale one.
+    for slug, path in _page_files().items():
+        if slug == absorb:
+            continue
+        text = path.read_text(encoding="utf-8")
+        rewritten = [
+            line.replace(absorb, keep)
+            if line.lstrip().startswith("target:") and line.rstrip().endswith(absorb)
+            else line
+            for line in _frontmatter_lines(text)
+        ]
+        if rewritten != _frontmatter_lines(text):
+            _fields, body = _split_page(text)
+            path.write_text(
+                "---\n" + "\n".join(rewritten) + "\n---\n\n" + body.strip() + "\n",
+                encoding="utf-8",
+            )
     return True
 
 
@@ -1276,6 +1355,11 @@ class HarnessState:
             return target.delete_memory(id, global_=True, **kwargs)
         self._ensure_local_writable()
         return _tombstone_memory_page(id)
+
+    def merge_pages(self, keep: str, absorb: str) -> bool:
+        """Merge the page `absorb` into `keep`; false when either page is gone."""
+        _require_refinements_enabled()
+        return merge_pages(keep, absorb)
 
     def create_prompt_note(
         self,
