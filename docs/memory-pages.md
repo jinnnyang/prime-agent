@@ -28,7 +28,7 @@ title: "Page-backed memory"
 - entries 段：prompt / skill / subagent / factory，逻辑与本分支之前完全一致。
 - memory 段：页索引（`slug — title` + `· read when:`），正文要用文件工具读（`bash` / `python_repl`）。
 
-索引预算 1700 字符，超过后按固定阶梯降级：缩短路由行 → 去掉路由行 → 每类只列最新 4 页 + `+N more`。实测 12 页中文语料（全量带 hook）= 索引 623 tok + 说明 223 tok；digest 合计 1480 tok（含 entries 段 633）。
+索引预算 1700 字符，超过后按固定阶梯降级：缩短路由行 → 去掉路由行 → 每类只列最新 4 页 + `+N more`。实测 12 页中文语料：entries 段 633 tok + memory 段 737 tok（说明 + 索引）+ 到期提示 48 tok = **1420 tok**。
 
 ## 3. 写路径
 
@@ -84,6 +84,6 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 |---|---|
 | daemon 级调度（不依赖会话活着） | 未做，需要 cron store 的 agent 级分区（评审 F1–F5） |
 | `compress` / `merge` / `abstract` 的执行 | 只有提示词；规则能定的 `promote` / `remove` 已落代码（`plan_pass` / `promote_page` / `remove_page`） |
-| `get_harness_state` 的页投影 | 未做：`search` / `overview` 已读页，`get_harness_state` 仍读条目 |
-| `weight` 的宿主统计 | 字段已解析；读取计数未接 |
+| `get_harness_state` 的页投影 | ✅ load 时投影、save 时排除（`d8ee6ebee`） |
+| `weight` 的宿主统计 | ✅ `search` 命中按进程计一次（`d8ee6ebee`） |
 | 归因：`evidence` 的存在性校验 | 未做（只解析条数） |
