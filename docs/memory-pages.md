@@ -64,27 +64,26 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 
 **边界**：`plan_pass` 不含提炼 / 关联 / 抽象 / 合并——那四项需要 pass 的判断，代码只提供前置判定，避免"代码替模型拍板"。
 
-## 6. 怎么打开 dream（当前默认关闭）
+## 6. dream 怎么被触发
 
-本分支不自动排程。要在某个会话里启用：
+**没有独立调度器。** 现有会话只在 daemon worker 存活时是 `active`，会话一停就 `archived`；绑在它上面的 cron job 会在第一次触发时被 `persisted_target_gone` 判定"目标已死"并整批取消。所以本分支不建"专用记忆会话"。
 
-```python
-await rlm_heartbeat.create(
-    "<paste memory::dream::dream_prompt() 的输出>",
-    interval="every 12h",
-    label="memory dream",
-    delivery_mode="follow_up",
-)
-```
+做法是**搭在活着的会话上**：
 
-pass 结束后由它自己用 `heartbeat_interval` 的结果重建下一次的 heartbeat。**未做的部分**：由宿主在会话启动时自动判定 `dream_due` 并创建 heartbeat（会改动真实行为，需要你先确认）。
+1. 每轮渲染 digest 时，若 `memory::dream::dream_due()` 为真 → 把 pass 的任务书写到 `<agent dir>/memory/DREAM.md`，并在 digest 末尾加一行提示（约 40 tok）。
+2. 会话读到提示后，派**一个** subagent，任务就是 `DREAM.md` 的内容。
+3. pass 结束写 `memory/journal/dream.log.jsonl`（含 `next_at`），下一次 `dream_due` 会因 `next_at` 未到而不触发。
+
+关闭方式：`settings.json` 里 `harness.dreamDueHint: false`（只关提示，不动页库）。
+
+`memory::dream::plan_pass()` 会先给出**规则已能决定**的动作（晋升、删除候选），pass 只需处理需要判断的部分（提炼 / 关联 / 抽象 / 合并）。
 
 ## 7. 未实现 / 已知缺口
 
 | 项 | 状态 |
 |---|---|
-| dream 的自动触发（daemon 或专用记忆会话） | 未做，需先定"会话如何保持 active" |
-| 压缩 / 合并 / 晋升的实际执行 | 只有提示词与归档原语；`compress`/`merge`/`promote` 作为结构化动作还没落代码 |
+| daemon 级调度（不依赖会话活着） | 未做，需要 cron store 的 agent 级分区（评审 F1–F5） |
+| `compress` / `merge` / `abstract` 的执行 | 只有提示词；规则能定的 `promote` / `remove` 已落代码（`plan_pass` / `promote_page` / `remove_page`） |
 | `get_harness_state` 的页投影 | 未做：`search` / `overview` 已读页，`get_harness_state` 仍读条目 |
 | `weight` 的宿主统计 | 字段已解析；读取计数未接 |
 | 归因：`evidence` 的存在性校验 | 未做（只解析条数） |
