@@ -624,8 +624,8 @@ What you may do, in this order of preference:\n\
 2. Distill — shorten a page to its conclusion, its trigger, and one evidence pointer. Extraction only: delete sentences, never invent a conclusion.\n\
 3. Abstract — from two or more pages with the same conclusion, write one `model` page and link the sources.\n\
 4. Promote — an `experience` page becomes `observation` only when at least two independent pieces of evidence support it.\n\
-5. Merge — two pages with the same conclusion become one; keep the surviving slug and leave a tombstone for the other.\n\
-6. Remove — only when ALL hold: the page body is under 120 characters, you searched this pass for evidence supporting its conclusion and found none, nothing links to it, and it is not an `_entities` node. Archive it; never unlink.\n\n\
+5. Merge — two pages with the same conclusion become one. Do it with `rlm.harness.merge_pages(keep, absorb)`, never by hand: the merge carries the evidence over and moves every reference to the survivor, and a hand edit loses both.\n\
+6. Remove — only when ALL hold: the page body is under 120 characters, it was last written more than fourteen days ago, you searched this pass for evidence supporting its conclusion and found none, nothing links to it, and it is not an `_entities` node. Do it with `rlm.harness.delete_memory(slug)`: it archives the page and logs the reason. Never unlink a page.\n\n\
 Evidence is what makes a conclusion trustworthy: cite what you relied on as a resolvable reference \
 (command and date, session id and turn, file and line, or commit sha). Evidence written in this \
 same pass never justifies a removal.\n\
@@ -841,7 +841,10 @@ mod tests {
         let prompt = dream_prompt(&decision);
         assert!(prompt.contains("a, b"));
         assert!(prompt.contains(&DREAM_NODE_BUDGET.to_string()));
-        assert!(prompt.contains("never unlink"));
+        // The prompt names the tools, so a pass edits through them and not by hand.
+        assert!(prompt.contains("rlm.harness.merge_pages"));
+        assert!(prompt.contains("rlm.harness.delete_memory"));
+        assert!(prompt.contains("Never unlink a page"));
     }
 }
 
