@@ -937,6 +937,11 @@ const DAEMON_EVENT: EventRule = EventRule {
         ("root_identity_persist_failed_count", optional(count())),
         ("saved_sessions_list_count", optional(count())),
         ("saved_sessions_usage_rows_max", optional(count())),
+        // The `memory_index` kind: page-backed memory adoption. Counts only,
+        // never a slug, title, hook, or page body.
+        ("pages", optional(count())),
+        ("kinds", optional(count())),
+        ("rung", optional(count())),
     ],
 };
 
@@ -1516,6 +1521,18 @@ mod tests {
                 assert!(exit.properties.iter().any(|(known, _)| *known == key));
             }
         }
+    }
+
+    #[test]
+    fn memory_index_properties_survive_sanitize() {
+        let mut properties = Properties::new();
+        properties.set("kind", Value::from("memory_index"));
+        properties.set("pages", Value::from(12_i64));
+        properties.set("kinds", Value::from(4_i64));
+        properties.set("rung", Value::from(1_i64));
+        let dropped = sanitize("daemon event", &mut properties);
+        assert_eq!(dropped, 0);
+        assert_eq!(properties.get("pages").and_then(Value::as_i64), Some(12));
     }
 
     #[test]

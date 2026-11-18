@@ -227,6 +227,47 @@ pub fn find_page(agent_dir: &Path, slug: &str) -> Option<PathBuf> {
     None
 }
 
+/// Whether a slug is safe to use as a file name. Slugs arrive from the model
+/// (refine edits, `create_memory(id=...)`) and become path components, so a
+/// separator, a parent reference, or a reserved name must be refused here rather
+/// than write outside the page store.
+#[must_use]
+pub fn is_valid_slug(slug: &str) -> bool {
+    let allowed =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.');
+    !slug.is_empty()
+        && slug.len() <= 120
+        && slug.chars().all(allowed)
+        && !slug.contains("..")
+        && !slug.starts_with('.')
+        // A slug never carries the page extension: the writer adds it, and a slug
+        // that already ends in `.md` would produce `x.md.md`.
+        && std::path::Path::new(slug)
+            .extension()
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("md"))
+}
+
+/// Write a page through a temporary file beside it and a rename, so a crash
+/// leaves either the old page or the new one, never half a frontmatter.
+fn write_atomically(target: &Path, contents: &str) -> std::io::Result<()> {
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "page path has no parent")
+    })?;
+    let name = target.file_name().map_or_else(
+        || "page.md".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let temporary = parent.join(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, contents)?;
+    match std::fs::rename(&temporary, target) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
+}
+
 /// Write a page, keeping any frontmatter field the caller does not set.
 ///
 /// # Errors
@@ -237,6 +278,12 @@ pub fn write_page(write: &PageWrite<'_>) -> std::io::Result<PathBuf> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("unknown memory type {:?}", write.kind),
+        ));
+    }
+    if !is_valid_slug(write.slug) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("memory slug {:?} is not a safe file name", write.slug),
         ));
     }
     let existing = find_page(write.agent_dir, write.slug);
@@ -267,7 +314,7 @@ pub fn write_page(write: &PageWrite<'_>) -> std::io::Result<PathBuf> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&target, text)?;
+    write_atomically(&target, &text)?;
     if let Some(previous) = existing {
         if previous != target {
             let _ = std::fs::remove_file(previous);
@@ -308,14 +355,27 @@ pub fn archive_page(agent_dir: &Path, slug: &str, today: &str) -> std::io::Resul
         || format!("{slug}.md"),
         |name| name.to_string_lossy().into_owned(),
     );
-    std::fs::rename(&path, archive.join(name))?;
+    // A unique archived name: an archive that overwrites an earlier copy of the
+    // same slug destroys the very before-image a rollback would need.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let stem = name.strip_suffix(".md").unwrap_or(&name).to_string();
+    std::fs::rename(&path, archive.join(format!("{stem}-{stamp}.md")))?;
+    // Append one line instead of rewriting the log: two archives racing must not
+    // overwrite each other's tombstones.
     let log = memory_dir(agent_dir).join("_archive.md");
-    let mut existing = std::fs::read_to_string(&log).unwrap_or_default();
-    if existing.is_empty() {
-        existing.push_str("# Archive\n\n");
+    if !log.exists() {
+        std::fs::write(&log, "# Archive\n\n")?;
     }
-    let _ = writeln!(existing, "- {slug} — {title} (archived {today})");
-    std::fs::write(&log, existing)?;
+    let mut tombstone = String::new();
+    let _ = writeln!(tombstone, "- {slug} — {title} (archived {today})");
+    {
+        use std::io::Write as _;
+        let mut handle = std::fs::OpenOptions::new().append(true).open(&log)?;
+        handle.write_all(tombstone.as_bytes())?;
+    }
     Ok(true)
 }
 
@@ -518,7 +578,7 @@ fn truncate(text: &str, cap: usize) -> String {
 fn fingerprint(pages: &[MemoryPage]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(b"memory-index-v1\0");
+    hasher.update(b"memory-index-v2\0");
     for page in pages {
         hasher.update(page.kind.as_bytes());
         hasher.update(b"\0");
@@ -528,6 +588,13 @@ fn fingerprint(pages: &[MemoryPage]) -> String {
         hasher.update(b"\0");
         hasher.update(page.hook.as_deref().unwrap_or("").as_bytes());
         hasher.update(b"\0");
+        // The same page under a different status (settled, disputed, archived)
+        // renders in a different section, and an older `updated` moves it down
+        // the truncation ladder: both change the text, so both belong here.
+        hasher.update(page.status.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\0");
+        hasher.update(page.updated.as_deref().unwrap_or("").as_bytes());
+        hasher.update(b"\0");
     }
     format!("{:x}", hasher.finalize())
 }
@@ -535,6 +602,38 @@ fn fingerprint(pages: &[MemoryPage]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slug_that_is_not_a_file_name_is_refused() {
+        assert!(is_valid_slug("cargo_test_baseline"));
+        assert!(is_valid_slug("issue-92-fix"));
+        for bad in [
+            "",
+            "a/b",
+            "../escape",
+            "..",
+            ".hidden",
+            "a.md",
+            "a:b",
+            "a\\b",
+        ] {
+            assert!(!is_valid_slug(bad), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn the_index_fingerprint_moves_when_status_or_updated_moves() {
+        let mut active = page("a", "model", "A", None);
+        active.status = Some("active".to_string());
+        active.updated = Some("2026-11-01".to_string());
+        let mut disputed = active.clone();
+        disputed.status = Some("disputed".to_string());
+        let mut older = active.clone();
+        older.updated = Some("2026-01-01".to_string());
+        // Both change the rendered index, so neither may leave the digest frozen.
+        assert_ne!(fingerprint(&[active.clone()]), fingerprint(&[disputed]));
+        assert_ne!(fingerprint(&[active]), fingerprint(&[older]));
+    }
 
     fn page(slug: &str, kind: &str, title: &str, hook: Option<&str>) -> MemoryPage {
         MemoryPage {
