@@ -283,6 +283,43 @@ refused, never overwritten.",
     ])
     .examples(&["factory export review-sweep --out shared-review-sweep.MACHINE.md"]),
     CommandSpec::new(
+        &["memory"],
+        "memory <status|due|plan|merge|delete|record-pass>",
+        "Inspect and maintain the page-backed memory store",
+    )
+    .description(
+        "Memory pages live under the agent dir; the kernel owns the rules that decide \
+what may be removed, what a merge carries, and when a consolidation pass records \
+itself. These subcommands drive that same implementation, so an operator action and \
+an agent action cannot disagree.",
+    ),
+    CommandSpec::new(&["memory", "status"], "memory status", "Pages, types, and whether a pass is due"),
+    CommandSpec::new(&["memory", "due"], "memory due", "Whether a consolidation pass is due, and why"),
+    CommandSpec::new(&["memory", "plan"], "memory plan", "Pages the rules would promote or remove"),
+    CommandSpec::new(
+        &["memory", "merge"],
+        "memory merge --keep <slug> --absorb <slug>",
+        "Merge one page into another",
+    )
+    .description(
+        "Body lines survive once, evidence and relations carry over, references follow \
+the survivor, and the absorbed page is archived with a tombstone.",
+    ),
+    CommandSpec::new(&["memory", "delete"], "memory delete <slug>", "Archive a page the rules allow removing")
+        .description(
+            "Refuses a page that carries evidence, declares relations, is pointed at, has a \
+body of 120 characters or more, or was written in the last two weeks.",
+        ),
+    CommandSpec::new(
+        &["memory", "record-pass"],
+        "memory record-pass [--visited N] [--merged N] [--promoted N] [--removed N] [--compressed N] [--next-hours H] [--why TEXT]",
+        "Record a finished consolidation pass",
+    )
+    .description(
+        "Writes the journal line the due check reads; the interval is clamped to the \
+stated six-hour floor and fourteen-day ceiling.",
+    ),
+    CommandSpec::new(
         &["prompt"],
         "prompt [--model <selector>] [--cwd <dir>] [--json]",
         "Print the assembled system prompt with its layer breakdown",

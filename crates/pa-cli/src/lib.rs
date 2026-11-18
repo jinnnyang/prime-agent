@@ -39,6 +39,7 @@ pub(crate) mod interactive_mode;
 pub(crate) mod list_models;
 pub(crate) mod mcp_command;
 pub(crate) mod mcp_login;
+pub(crate) mod memory_command;
 pub(crate) mod mode;
 pub(crate) mod package_command;
 pub(crate) mod prime_inference_login;
