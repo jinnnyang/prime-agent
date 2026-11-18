@@ -60,6 +60,7 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 | `append_journal` / `read_journal` | JSONL：visited / compressed / merged / promoted / removed / next_at / why |
 | `dream_prompt(decision)` | 子代理的任务书：允许的动作按优先级排列、抽取式压缩、删除的四条前置、同 pass 证据不能支持删除、预算 24 节点 / 3 轮 |
 | `plan_pass(agent_dir)` | **规则已能决定的动作**：`Promote`（`experience` 且 evidence ≥ 2）、`Remove`（正文 < 120 字符 ∧ 无证据 ∧ 不在任何边端点 ∧ 非 disputed） |
+| `merge_pages(keep, absorb)` | 由 pass 判定「两页同一结论」，代码只负责写：正文去重、证据带续行搬过去、所有 `target:` 改指存活页、被并页归档并记 `merged into <slug>`。同页 / 缺页 / `_entities` 拒绝 |
 | `promote_page` / `remove_page` | 执行上一条：前者改 type 为 `observation` 并保留正文；后者归档 + 墓碑。都只在条件成立时动手，否则返回 `false` |
 
 **边界**：`plan_pass` 不含提炼 / 关联 / 抽象 / 合并——那四项需要 pass 的判断，代码只提供前置判定，避免"代码替模型拍板"。
@@ -83,7 +84,7 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 | 项 | 状态 |
 |---|---|
 | daemon 级调度（不依赖会话活着） | 未做，需要 cron store 的 agent 级分区（评审 F1–F5） |
-| `compress` / `merge` / `abstract` 的执行 | 只有提示词；规则能定的 `promote` / `remove` 已落代码（`plan_pass` / `promote_page` / `remove_page`） |
+| `compress` / `abstract` 的执行 | 只有提示词（需要 pass 的下判断）；`merge` 已有代码（`merge_pages`，Rust + kernel 两处） |
 | `get_harness_state` 的页投影 | ✅ load 时投影、save 时排除（`d8ee6ebee`） |
 | `weight` 的宿主统计 | ✅ `search` 命中按进程计一次（`d8ee6ebee`） |
 | 归因：`evidence` 的存在性校验 | 未做（只解析条数） |
