@@ -50,6 +50,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_SLUG_CHARS = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+
+
+def _valid_slug(slug: str) -> bool:
+    """Whether a slug is safe as a file name; mirrors `memory::is_valid_slug`."""
+    return bool(
+        _SLUG_CHARS.match(slug)
+        and ".." not in slug
+        and not slug.startswith(".")
+        and not slug.endswith(".md")
+    )
+
+
+def _require_slug(slug: str) -> None:
+    if not _valid_slug(slug):
+        raise ValueError(f"memory slug {slug!r} is not a safe file name")
+
+
 def _slug(raw: str, fallback: str) -> str:
     normalized = "".join(ch.lower() if ch.isalnum() else "_" for ch in raw.strip())
     normalized = "_".join(part for part in normalized.split("_") if part)
@@ -167,7 +185,7 @@ def _memory_root_for(state_file: Path | None) -> Path:
 
 
 def _memory_pages_dir(root: Path | None = None) -> Path:
-    return _memory_dir() / _MEMORY_PAGES_DIR_NAME
+    return _memory_dir(root) / _MEMORY_PAGES_DIR_NAME
 
 
 def _split_page(text: str) -> tuple[dict[str, str], str]:
@@ -286,9 +304,9 @@ def _write_memory_page(
     if hook is not None:
         updates["hook"] = _yaml_scalar(hook)
     lines = ["---", *_merge_frontmatter(block, updates), "---"]
+    _require_slug(slug)
     target = _memory_pages_dir(root) / page_type / f"{slug}.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("\n".join(lines) + "\n\n" + content.strip() + "\n", encoding="utf-8")
+    _write_text_atomically(target, "\n".join(lines) + "\n\n" + content.strip() + "\n")
     return target
 
 
@@ -340,6 +358,17 @@ def _removal_refusal(slug: str, root: Path | None = None) -> str | None:
     else:
         return "it has no last-write date"
     return None
+
+
+def _write_text_atomically(target: Path, text: str) -> None:
+    """Write beside the target and rename, so a crash never leaves half a page."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _tombstone_memory_page(
@@ -485,11 +514,10 @@ def merge_pages(keep: str, absorb: str, root: Path | None = None) -> bool:
             line for entry in carried for line in _reindent(entry, target_indent)
         ]
 
-    kept.write_text(
-        "---\n" + "\n".join(block) + "\n---\n\n" + "\n".join(lines) + "\n",
-        encoding="utf-8",
+    _write_text_atomically(
+        kept, "---\n" + "\n".join(block) + "\n---\n\n" + "\n".join(lines) + "\n"
     )
-    _tombstone_memory_page(absorb, f"merged into {keep}")
+    _tombstone_memory_page(absorb, f"merged into {keep}", root=root)
 
     # A dangling reference is worse than a stale one: every page that named the
     # absorbed slug names the survivor instead. Exact match only, so a target
@@ -511,9 +539,8 @@ def merge_pages(keep: str, absorb: str, root: Path | None = None) -> bool:
         ]
         if rewritten != front:
             _fields, body = _split_page(text)
-            path.write_text(
-                "---\n" + "\n".join(rewritten) + "\n---\n\n" + body.strip() + "\n",
-                encoding="utf-8",
+            _write_text_atomically(
+                path, "---\n" + "\n".join(rewritten) + "\n---\n\n" + body.strip() + "\n"
             )
     return True
 
@@ -578,7 +605,7 @@ def _record_page_read(entry: HarnessEntry) -> None:
     }
     lines = ["---", *_merge_frontmatter(_frontmatter_lines(text), updates), "---"]
     try:
-        path.write_text("\n".join(lines) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+        _write_text_atomically(path, "\n".join(lines) + "\n\n" + body.strip() + "\n")
     except OSError:
         return
     _READ_PAGES.add(entry.id)
@@ -1650,18 +1677,7 @@ class HarnessState:
         global one — a scope that silently widens is worse than an error.
         """
         _refuse_local_memory(global_)
-        if target := self._global_target(global_, kwargs):
-            return target.create_memory(
-                title,
-                content,
-                id=id,
-                path=path,
-                metadata=metadata,
-                global_=True,
-                type=type,
-                hook=hook,
-                **kwargs,
-            )
+        _resolve_global_flag(global_, kwargs)
         self._ensure_local_writable()
         self._require_page_store()
         _require_text("memory", title, "title", title)
@@ -1697,17 +1713,7 @@ class HarnessState:
         global_: bool = False,
         **kwargs: Any,
     ) -> HarnessEntry:
-        if target := self._global_target(global_, kwargs):
-            return target.update_memory(
-                id,
-                title,
-                content,
-                path=path,
-                metadata=metadata,
-                global_=True,
-                hook=hook,
-                **kwargs,
-            )
+        _resolve_global_flag(global_, kwargs)
         self._ensure_local_writable()
         self._require_page_store()
         pages = _page_files(self._memory_root)
@@ -1737,8 +1743,7 @@ class HarnessState:
         tombstone line in ``memory/_archive.md``, so a mistaken archive is
         reversible and the next consolidation pass does not recreate the page.
         """
-        if target := self._global_target(global_, kwargs):
-            return target.delete_memory(id, global_=True, **kwargs)
+        _resolve_global_flag(global_, kwargs)
         self._ensure_local_writable()
         self._require_page_store()
         refusal = _removal_refusal(id, self._memory_root)
@@ -2034,7 +2039,7 @@ class HarnessState:
             if kind == "memory":
                 # Memory is page-backed: the count and the records come from the
                 # pages on disk, not from this store's entries.
-                pages = sorted(memory_pages().values(), key=lambda entry: entry.id)
+                pages = sorted(memory_pages(self._memory_root).values(), key=lambda entry: entry.id)
                 lines.append(f"{kind}: {len(pages)} (page-backed, <agent dir>/memory/pages/)")
                 for entry in pages[:max_entries_per_kind]:
                     fields = entry.metadata or {}
@@ -2099,6 +2104,7 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.search(query, kind=kind, limit=limit)
         self._sync_from_disk()
+        self._sync_page_backed()
         if not isinstance(query, str):
             raise TypeError(f"query must be str, got {type(query).__name__}")
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
@@ -2118,7 +2124,7 @@ class HarnessState:
             # Pages are the memory store: they join the ranked corpus so a search
             # for a fact finds the page, not an empty legacy entry list.
             entries = [entry for entry in entries if entry.kind != "memory"]
-            entries.extend(memory_pages().values())
+            entries.extend(memory_pages(self._memory_root).values())
 
         # Document frequency per term over the ranked corpus: a term in
         # every entry weighs log(2), a term in one entry of N weighs
