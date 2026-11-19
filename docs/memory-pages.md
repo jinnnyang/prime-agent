@@ -17,6 +17,8 @@ title: "Page-backed memory"
 
 四种 type，索引按此顺序输出：`world`（与本机、仓库、版本无关的事实）、`model`（稳定偏好、规则、常规答案）、`observation`（≥2 次经验归纳，带证据）、`experience`（单次会话记录）。
 
+**type 是衰减档位，不是出处**：证据积累，页就往上一格走（`experience → observation → model → world`）。没有降级——没人读的页只是自然衰减到归档。升级只走 `rlm.harness` / `prime-agent memory promote`，不手写 `type:`，因为移动的目标必须同时删掉旧目录里的副本（否则加载器按目录顺序挑，见 `_promote_memory_page`）。档位判据：`experience` 要 2 条独立证据；`observation` 要 2 种 `kind`；`world` 要 `web`/`file`/`cmd` 这类机器可复核的证据。`status: disputed` 的页不升级。
+
 页的 frontmatter：`slug` / `type` / `title` / `hook`（"什么时候该读我"）/ `status` / `updated`，可选 `evidence`（列表）、`weight`（宿主统计）、`relations`、`history`。
 
 `status: archive` / `invalidated` 不进索引；`status: disputed` 单独成段，与已定事实分开列。
@@ -39,6 +41,7 @@ title: "Page-backed memory"
 | `rlm.harness.delete_memory(id)` | 先按 §4 的规则校验，再归档 + 墓碑（不 unlink）；不合格时抛 `ValueError` 并说明原因 |
 | `rlm.harness.merge_pages(keep, absorb)` | 合并两页（pass 判定同一结论后调用）：正文去重、`evidence` 与 `relations` 按 YAML 值搬过去、引用精确改指幸存页、被并页归档 |
 | `rlm.harness.record_dream_pass(visited=, next_hours=, ...)` | 记一次 pass：写 journal 行（含 `next_at`），拿锁→写→放锁；间隔夹在 6h–14d |
+| `prime-agent memory promote <slug> [--to <type>]` | 走同一份 Python 规则把页升一格；`--to` 只用来校验，不是授权——给的目标不是证据挣来的那格就返回 `ok: false` |
 | `rlm.harness.dream_due()` | `(是否到期, 原因)`，读 journal 的 `next_at` |
 | `rlm.harness.search(query)` | 搜索包含页；「没有可搜索词」的查询（ASCII < 3 字符、非 CJK 单字、只有标点）**报错**而不是静默返回空 |
 | `rlm.harness.overview()` | memory 段显示为 `page-backed` 计数与 hook |
@@ -73,10 +76,10 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 | `acquire_lock` / `release_lock` | 单 pass 锁，30 分钟视为陈旧 |
 | `append_journal` / `read_journal` | JSONL：visited / compressed / merged / promoted / removed / next_at / why |
 | `dream_prompt(decision)` | 子代理的任务书：允许的动作按优先级排列、抽取式压缩、删除的四条前置、同 pass 证据不能支持删除、预算 24 节点 / 3 轮 |
-| `plan_pass(agent_dir)` | **规则已能决定的动作**：`Promote`（`experience` 且 evidence ≥ 2）、`Remove`（正文 < 120 字符 ∧ 无证据 ∧ 不在任何边端点 ∧ 非 disputed） |
+| `plan_pass(agent_dir)` | **规则已能决定的动作**：`Promote`（`_promotion_verdict` 判出的下一格，带 `to` / `why`）、`Remove`（正文 < 120 字符 ∧ 无证据 ∧ 不在任何边端点 ∧ 非 disputed） |
 | `removal_eligible(page, links, today)` | **唯一的删除判据**：plan 与执行都调它（正文 < 120 字符 ∧ 无证据 ∧ 不是任何 relations 端点（出入双向）∧ 非 disputed ∧ 最近写入 ≥ 14 天）。日期不可解析时 fail-closed |
 | `merge_pages(keep, absorb)` | 由 pass 判定「两页同一结论」，代码只负责写：正文去重、证据带续行搬过去、所有 `target:` 改指存活页、被并页归档并记 `merged into <slug>`。同页 / 缺页 / `_entities` 拒绝 |
-| `promote_page` / `remove_page` | 执行上一条：前者改 type 为 `observation` 并保留正文；后者归档 + 墓碑。都只在条件成立时动手，否则返回 `false` |
+| `promote_page` / `remove_page` | 执行上一条：前者按 `_promotion_verdict` 给的目标换 type、把页移到 `<type>/`、删掉旧目录里的副本并记一行 `history`；后者归档 + 墓碑。都只在条件成立时动手，否则返回 `false` |
 
 **边界**：`plan_pass` 不含提炼 / 关联 / 抽象 / 合并——那四项需要 pass 的判断，代码只提供前置判定，避免"代码替模型拍板"。
 

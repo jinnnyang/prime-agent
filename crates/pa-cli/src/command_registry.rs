@@ -284,7 +284,7 @@ refused, never overwritten.",
     .examples(&["factory export review-sweep --out shared-review-sweep.MACHINE.md"]),
     CommandSpec::new(
         &["memory"],
-        "memory <status|due|plan|merge|delete|record-pass>",
+        "memory <status|due|plan|promote|merge|delete|record-pass>",
         "Inspect and maintain the page-backed memory store",
     )
     .description(
@@ -304,6 +304,18 @@ an agent action cannot disagree.",
     .description(
         "Body lines survive once, evidence and relations carry over, references follow \
 the survivor, and the absorbed page is archived with a tombstone.",
+    ),
+    CommandSpec::new(
+        &["memory", "promote"],
+        "memory promote <slug> [--to <type>]",
+        "Move a page one step up the decay ladder",
+    )
+    .description(
+        "A type is a decay bracket, not a provenance: evidence accumulates and the page \
+moves experience -> observation -> model -> world. experience needs two independent \
+evidence entries, observation needs two kinds of evidence, world needs web/file/cmd \
+evidence a machine can re-check. Nothing demotes; an unread page just decays and is \
+archived. --to is checked against what the evidence earned, never trusted.",
     ),
     CommandSpec::new(&["memory", "delete"], "memory delete <slug>", "Archive a page the rules allow removing")
         .description(

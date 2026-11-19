@@ -31,6 +31,10 @@ enum MemoryCommand {
         keep: String,
         absorb: String,
     },
+    Promote {
+        slug: String,
+        to: Option<String>,
+    },
     Delete {
         slug: String,
     },
@@ -63,6 +67,7 @@ fn parse_memory_command(args: &[String]) -> Result<MemoryCommand, String> {
     }
     let mut keep = None;
     let mut absorb = None;
+    let mut to = None;
     let mut visited = 0_u64;
     let mut merged = 0_u64;
     let mut promoted = 0_u64;
@@ -81,6 +86,7 @@ fn parse_memory_command(args: &[String]) -> Result<MemoryCommand, String> {
         match arg.as_str() {
             "--keep" => keep = Some(value("--keep")?),
             "--absorb" => absorb = Some(value("--absorb")?),
+            "--to" => to = Some(value("--to")?),
             "--visited" => {
                 visited = value("--visited")?
                     .parse()
@@ -130,6 +136,13 @@ fn parse_memory_command(args: &[String]) -> Result<MemoryCommand, String> {
             };
             Ok(MemoryCommand::Merge { keep, absorb })
         }
+        "promote" => match operands.as_slice() {
+            [slug] => Ok(MemoryCommand::Promote {
+                slug: slug.clone(),
+                to,
+            }),
+            _ => Err("Usage: prime-agent memory promote <slug> [--to <type>]".to_string()),
+        },
         "delete" => match operands.as_slice() {
             [slug] => Ok(MemoryCommand::Delete { slug: slug.clone() }),
             _ => Err("Usage: prime-agent memory delete <slug>".to_string()),
@@ -169,6 +182,7 @@ pub fn run_memory_command(args: &[String]) -> i32 {
         MemoryCommand::Merge { keep, absorb } => {
             json!({"op": "merge", "keep": keep, "absorb": absorb})
         }
+        MemoryCommand::Promote { slug, to } => json!({"op": "promote", "slug": slug, "to": to}),
         MemoryCommand::Delete { slug } => json!({"op": "delete", "slug": slug}),
         MemoryCommand::RecordPass {
             visited,
@@ -295,6 +309,13 @@ mod tests {
             })
         );
         assert_eq!(
+            parse_memory_command(&args(&["promote", "slug", "--to", "model"])),
+            Ok(MemoryCommand::Promote {
+                slug: "slug".to_string(),
+                to: Some("model".to_string())
+            })
+        );
+        assert_eq!(
             parse_memory_command(&args(&["delete", "slug"])),
             Ok(MemoryCommand::Delete {
                 slug: "slug".to_string()
@@ -321,6 +342,8 @@ mod tests {
     fn a_missing_operand_names_the_usage() {
         let error = parse_memory_command(&args(&["merge", "--keep", "a"])).unwrap_err();
         assert!(error.contains("memory merge --keep"), "{error}");
+        let error = parse_memory_command(&args(&["promote"])).unwrap_err();
+        assert!(error.contains("memory promote"), "{error}");
         let error = parse_memory_command(&args(&["delete"])).unwrap_err();
         assert!(error.contains("memory delete"), "{error}");
     }

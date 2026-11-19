@@ -464,6 +464,92 @@ def _entry_identity(entry: list[str]) -> str:
     return " ".join(" ".join(piece.split()) for piece in entry)
 
 
+_PROMOTION_STEPS: dict[str, str] = {
+    "experience": "observation",
+    "observation": "model",
+    "model": "world",
+}
+
+# Evidence kinds a machine can re-check; a page that never leaves the session log
+# cannot become world, whatever it says.
+_MACHINE_EVIDENCE_KINDS = frozenset({"web", "file", "cmd"})
+
+def _promotion_verdict(slug: str, root: Path | None = None) -> tuple[str | None, str]:
+    """The type this page has earned, or None and why it has not.
+
+    A type is a decay bracket, not a provenance: evidence accumulates and the
+    page moves up the ladder, so a preference stated repeatedly becomes a model
+    before anyone proves it. Nothing demotes; an unread page simply decays out.
+    """
+    path = _page_files(root).get(slug)
+    if path is None:
+        return None, "no such page"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, f"unreadable page: {path}"
+    fields, body = _split_page(text)
+    kind = fields.get("type") or "experience"
+    target = _PROMOTION_STEPS.get(kind)
+    if target is None:
+        return None, f"{kind} is the top of the ladder"
+    if fields.get("status") == "disputed":
+        return None, "the page is disputed"
+    evidence = _block_entries(_frontmatter_lines(text), "evidence")
+    kinds: set[str] = set()
+    for entry in evidence:
+        for line in entry:
+            for found in re.finditer(r"kind:\s*([^,}\n]+)", line):
+                kinds.add(found.group(1).strip().strip("'\""))
+    if kind == "experience":
+        if len(evidence) < 2:
+            return None, "needs two independent pieces of evidence"
+    elif kind == "observation":
+        if len(kinds) < 2:
+            return None, f"needs two kinds of evidence, has {sorted(kinds) or 'none'}"
+    else:
+        if not (kinds & _MACHINE_EVIDENCE_KINDS):
+            return None, "needs web, file, or cmd evidence a machine can re-check"
+    return target, f"{len(evidence)} evidence entries ({sorted(kinds) or 'none'})"
+
+def _promote_memory_page(slug: str, target: str, root: Path | None = None) -> bool:
+    """Move a page to a slower-decaying type, recording why it moved.
+
+    Promotion must stay on the ladder (one step up, never sideways or down) and
+    must leave exactly one page per slug: a stale copy in the old directory would
+    give the loader two candidates and pick by directory order.
+    """
+    path = _page_files(root).get(slug)
+    if path is None:
+        return False
+    if _PROMOTION_STEPS.get(path.parent.name) != target:
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    block = _frontmatter_lines(text)
+    _fields, body = _split_page(text)
+    updates = {
+        "type": target,
+        "updated": datetime.now(timezone.utc).date().isoformat(),
+    }
+    block = _merge_frontmatter(block, updates)
+    history = f'  - {{at: {updates["updated"]}, from: {path.parent.name}, to: {target}, reason: "promoted"}}'
+    bounds = _block_bounds(block, "history")
+    if bounds is None:
+        block.extend(["history:", history])
+    else:
+        block.insert(bounds[1], history)
+    destination = _memory_pages_dir(root) / target / f"{slug}.md"
+    _write_text_atomically(
+        destination, "---\n" + "\n".join(block) + "\n---\n\n" + body.strip() + "\n"
+    )
+    if destination != path:
+        with contextlib.suppress(OSError):
+            path.unlink()
+    return True
+
 def merge_pages(keep: str, absorb: str, root: Path | None = None) -> bool:
     """Merge one page into another the pass decided says the same thing.
 
@@ -728,18 +814,28 @@ def cli_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
             return {"ok": True, "due": due, "reason": reason}
         if op == "plan":
             promote, remove = [], []
-            for slug, path in _page_files(root).items():
-                entry = _memory_page_entry(slug, path)
-                fields, body = _split_page(path.read_text(encoding="utf-8"))
-                if fields.get("type") == "experience" and _block_entries(
-                    _frontmatter_lines(path.read_text(encoding="utf-8")), "evidence"
-                ):
-                    pieces = _block_entries(_frontmatter_lines(path.read_text(encoding="utf-8")), "evidence")
-                    if len(pieces) >= 2:
-                        promote.append(slug)
+            for slug in _page_files(root):
+                target, why = _promotion_verdict(slug, root)
+                if target is not None:
+                    promote.append({"slug": slug, "to": target, "why": why})
                 if _removal_refusal(slug, root) is None:
                     remove.append(slug)
-            return {"ok": True, "promote": sorted(promote), "remove": sorted(remove)}
+            return {"ok": True, "promote": promote, "remove": sorted(remove)}
+        if op == "promote":
+            slug = str(payload.get("slug") or "")
+            target = payload.get("to")
+            verdict, why = _promotion_verdict(slug, root)
+            if target is not None and target != verdict:
+                # An explicit target is a request, not a licence: it still has to
+                # be the step the evidence earned.
+                return {
+                    "ok": False,
+                    "errors": [f"{slug}: {why} (asked for {target})"],
+                    "promoted": False,
+                }
+            done = verdict is not None and _promote_memory_page(slug, verdict, root)
+            return {"ok": done, "promoted": done, "slug": slug, "to": verdict if done else None,
+                    "why": why}
         if op == "merge":
             keep, absorb = str(payload.get("keep") or ""), str(payload.get("absorb") or "")
             merged = merge_pages(keep, absorb, root)
@@ -1793,6 +1889,11 @@ class HarnessState:
             merge_path=page,
             root=self._memory_root,
         )
+        # A type change moves the page to another directory; leaving the old copy
+        # behind would give one slug two pages and a silent winner by rglob order.
+        if written != page:
+            with contextlib.suppress(OSError):
+                page.unlink()
         return _memory_page_entry(id, written)
 
     def delete_memory(self, id: str, *, global_: bool = False, **kwargs: Any) -> bool:

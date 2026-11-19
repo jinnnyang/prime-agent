@@ -327,7 +327,7 @@ What you may do, in this order of preference:\n\
 1. Relate — add `part_of` / `derived_from` / `contradicts` edges between pages that already exist. Edges only point at existing pages.\n\
 2. Distill — shorten a page to its conclusion, its trigger, and one evidence pointer. Extraction only: delete sentences, never invent a conclusion.\n\
 3. Abstract — from two or more pages with the same conclusion, write one `model` page and link the sources.\n\
-4. Promote — an `experience` page becomes `observation` only when at least two independent pieces of evidence support it.\n\
+4. Promote — a type is a decay bracket, not a provenance: evidence accumulates and the page moves up. Do it with `rlm.harness` or `prime-agent memory promote`, never by writing `type:` by hand. `experience` needs two independent pieces of evidence, `observation` needs two kinds of evidence, `world` needs web/file/cmd evidence a machine can re-check.\n\
 5. Merge — two pages with the same conclusion become one. Do it with `rlm.harness.merge_pages(keep, absorb)`, never by hand: the merge carries the evidence over and moves every reference to the survivor, and a hand edit loses both.\n\
 6. Remove — only when ALL hold: the page body is under 120 characters, it was last written more than fourteen days ago, you searched this pass for evidence supporting its conclusion and found none, nothing links to it, and it is not an `_entities` node. Do it with `rlm.harness.delete_memory(slug)`: it archives the page and logs the reason. Never unlink a page.\n\n\
 Evidence is what makes a conclusion trustworthy: cite what you relied on as a resolvable reference \

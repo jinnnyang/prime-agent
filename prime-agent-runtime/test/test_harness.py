@@ -1729,6 +1729,72 @@ class HarnessMemoryPagesTest(unittest.TestCase):
                 self.assertEqual(record["next_at"] - record["ts"], floor_or_ceiling * 3600)
                 self.assertFalse(state.dream_due()[0])
 
+    def test_update_memory_moving_the_type_leaves_one_page(self) -> None:
+        with page_store(), tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            created = Path(state.create_memory("Tea notes", "First body.", id="tea").metadata["page"])
+            self.assertEqual(created.parent.name, "experience")
+
+            updated = state.update_memory("tea", "Tea notes", "First body.", metadata={"type": "model"})
+
+            page = Path(updated.metadata["page"])
+            self.assertEqual(page.parent.name, "model")
+            self.assertFalse(created.exists(), "the old type's copy would win by directory order")
+            self.assertEqual(
+                [p.relative_to(page.parents[1]).as_posix() for p in page.parents[1].rglob("tea.md")],
+                ["model/tea.md"],
+            )
+            self.assertEqual(harness_module._page_files(page.parents[2])["tea"], page)
+
+    def test_promotion_needs_the_evidence_the_next_type_demands(self) -> None:
+        with page_store(), tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            once = Path(state.create_memory("Once", "Body.", id="once").metadata["page"])
+            self.assertIsNone(harness_module._promotion_verdict("once", once.parents[2])[0])
+
+            once.write_text(
+                once.read_text(encoding="utf-8").replace(
+                    "---\n\n",
+                    'evidence:\n  - {kind: session, path: "a"}\n  - {kind: file, path: "b"}\n---\n\n',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(harness_module._promotion_verdict("once", once.parents[2])[0], "observation")
+
+            self.assertTrue(harness_module._promote_memory_page("once", "observation", once.parents[2]))
+            promoted = harness_module._page_files(once.parents[2])["once"]
+            self.assertEqual(promoted.parent.name, "observation")
+            self.assertFalse(once.exists())
+            fields, _body = harness_module._split_page(promoted.read_text(encoding="utf-8"))
+            self.assertEqual(fields["type"], "observation")
+            self.assertIn("from: experience, to: observation", promoted.read_text(encoding="utf-8"))
+
+            # One step at a time: the target must be the step the evidence earned.
+            self.assertFalse(harness_module._promote_memory_page("once", "world", once.parents[2]))
+            # observation -> model needs two kinds of evidence, which two entries share here.
+            self.assertEqual(
+                harness_module._promotion_verdict("once", once.parents[2])[0], "model"
+            )
+
+    def test_promotion_refuses_a_disputed_page_and_stops_at_world(self) -> None:
+        with page_store(), tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            page = Path(state.create_memory("Claim", "Body.", id="claim").metadata["page"])
+            page.write_text(
+                page.read_text(encoding="utf-8")
+                .replace("status: draft", "status: disputed")
+                .replace(
+                    "---\n\n",
+                    'evidence:\n  - {kind: cmd, path: "x"}\n  - {kind: web, path: "y"}\n---\n\n',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            verdict, why = harness_module._promotion_verdict("claim", page.parents[2])
+            self.assertIsNone(verdict)
+            self.assertIn("disputed", why)
+
     def test_merge_pages_carries_evidence_entries_across(self) -> None:
         with page_store(), tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
