@@ -97,6 +97,14 @@ refine 的 `memory` 编辑在**全局作用域**下同样写页（`planner::appl
 
 `memory::dream::plan_pass()` 会先给出**规则已能决定**的动作（晋升、删除候选），pass 只需处理需要判断的部分（提炼 / 关联 / 抽象 / 合并）。
 
+## 6b. 图遍历（读页即走边）
+
+索引只路由；走图靠 `rlm.harness.read_page(slug)`：
+
+- 返回正文 + 出边（`derived_from` / `part_of` / `contradicts`，frontmatter 里读）+ 反链（全库扫边字段，谁指向这页）。
+- 读一次记一次 `weight`/`last_read`（每进程每页一次），衰减梯子才有输入——与 search 命中同一条 `_record_page_read` 通路。
+- digest 索引行带紧凑边标 `· links: N out / M in`：路由时能看出枢纽页和孤叶页；fingerprint 覆盖边字段，改边即刷新 digest。
+
 ## 7. 未实现 / 已知缺口
 
 | 项 | 状态 |

@@ -353,6 +353,7 @@ mod tests {
             updated: Some("2026-11-01".to_string()),
             path: PathBuf::from("x.md"),
             evidence,
+            edges: Vec::new(),
             weight: None,
             body_chars: 200,
         }

@@ -928,6 +928,90 @@ def memory_pages(root: Path | None = None) -> dict[str, HarnessEntry]:
     }
 
 
+_EDGE_KEYS = ("derived_from", "part_of", "contradicts")
+
+
+def _page_edges(text: str) -> list[tuple[str, list[str]]]:
+    """The page's declared graph edges: ``(key, slugs)`` per edge field.
+
+    Edge fields are lists (block or inline); `_split_page` keeps only top-level
+    scalars, so edges are read straight off the frontmatter block here.
+    """
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    edges: list[tuple[str, list[str]]] = []
+    current: str | None = None
+    values: list[str] = []
+    for line in text[3:end].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if current is not None:
+                values.append(stripped[2:].strip().strip("\"'"))
+            continue
+        key, sep, value = stripped.partition(":")
+        if not sep:
+            continue
+        key = key.strip()
+        if key in _EDGE_KEYS:
+            if current is not None:
+                edges.append((current, values))
+            current, values = key, []
+            inline = value.strip()
+            if inline:
+                values = [v.strip().strip("\"'") for v in inline.strip("[]").split(",") if v.strip()]
+        elif current is not None:
+            edges.append((current, values))
+            current, values = None, []
+    if current is not None:
+        edges.append((current, values))
+    return [(key, targets) for key, targets in edges if targets]
+
+
+def read_page(slug: str, *, root: Path | None = None) -> dict[str, Any] | None:
+    """One page's body plus its graph neighborhood: edges out, backlinks in.
+
+    The walk entry point: the digest routes here, the edges point onward, and
+    the read counts toward the decay ladder like a search hit.
+    """
+    pages = _page_files(root)
+    path = pages.get(slug)
+    if path is None:
+        return None
+    text = path.read_text(encoding="utf-8")
+    entry = _memory_page_entry(slug, path)
+    _record_page_read(entry)
+    out_edges: dict[str, list[str]] = {}
+    for key, targets in _page_edges(text):
+        out_edges.setdefault(key, []).extend(t for t in targets if t != slug)
+    backlinks: dict[str, list[str]] = {}
+    for other_slug, other_path in pages.items():
+        if other_slug == slug:
+            continue
+        try:
+            other_text = other_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for key, targets in _page_edges(other_text):
+            if slug in targets:
+                backlinks.setdefault(key, []).append(other_slug)
+    fields, body = _split_page(text)
+    return {
+        "slug": slug,
+        "type": fields.get("type", ""),
+        "title": entry.title,
+        "hook": entry.metadata.get("hook", ""),
+        "status": entry.metadata.get("status", ""),
+        "updated": entry.metadata.get("updated", ""),
+        "path": str(path),
+        "body": body.strip(),
+        "out_edges": out_edges,
+        "backlinks": backlinks,
+    }
+
+
 def _require_refinements_enabled() -> None:
     """Read the host's global-only master switch, without caching it."""
     try:

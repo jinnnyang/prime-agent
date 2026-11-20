@@ -1842,6 +1842,55 @@ class HarnessMemoryPagesTest(unittest.TestCase):
             self.assertTrue((kept_page.parents[2] / "archive" / "beta.md").exists())
 
 
+class HarnessReadPageTest(unittest.TestCase):
+    """read_page is the walk entry point: body, edges out, backlinks in, read recorded."""
+
+    def test_read_page_returns_body_edges_and_backlinks(self) -> None:
+        with page_store():
+            state = HarnessState(Path("unused_state.json"))
+            state.create_memory(
+                "Hub", "The hub body.", id="hub", type="model", hook="read when hub",
+            )
+            state.create_memory(
+                "Spoke", "The spoke body.", id="spoke", type="observation", hook="read when spoke",
+            )
+            spoke_page = Path(harness_module.memory_pages()["spoke"].metadata["page"])
+            text = spoke_page.read_text(encoding="utf-8")
+            fields, body = harness_module._split_page(text)
+            frontmatter = harness_module._frontmatter_lines(text)
+            merged = harness_module._merge_frontmatter(frontmatter, {"derived_from": "hub"})
+            spoke_page.write_text(
+                "---\n" + "\n".join(merged) + "\n---\n\n" + body.strip() + "\n", encoding="utf-8"
+            )
+
+            page = harness_module.read_page("hub")
+            self.assertEqual(page["body"], "The hub body.")
+            self.assertEqual(page["out_edges"], {})
+            self.assertEqual(page["backlinks"], {"derived_from": ["spoke"]})
+
+            spoke = harness_module.read_page("spoke")
+            self.assertEqual(spoke["out_edges"], {"derived_from": ["hub"]})
+            self.assertEqual(spoke["backlinks"], {})
+
+    def test_read_page_records_the_read_for_the_decay_ladder(self) -> None:
+        with page_store():
+            HarnessState(Path("unused_state.json")).create_memory(
+                "Tea", "Oolong notes.", id="tea", type="model", hook="read when brewing",
+            )
+            today = datetime.now(timezone.utc).date().isoformat()
+            harness_module.read_page("tea")
+            text = Path(harness_module.memory_pages()["tea"].metadata["page"]).read_text(
+                encoding="utf-8"
+            )
+            fields, _ = harness_module._split_page(text)
+            self.assertEqual(fields.get("last_read"), today)
+            self.assertEqual(fields.get("weight"), "1")
+
+    def test_read_page_unknown_slug_is_none(self) -> None:
+        with page_store():
+            self.assertIsNone(harness_module.read_page("no-such-page"))
+
+
 class HarnessSearchTest(unittest.TestCase):
     def test_search_ranks_relevant_entries_first(self) -> None:
         with page_store(), tempfile.TemporaryDirectory() as temp_dir:

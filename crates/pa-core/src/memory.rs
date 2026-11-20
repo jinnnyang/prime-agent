@@ -6,6 +6,7 @@
 //! reads a page body with its normal file tools, so the index only has to make a
 //! page findable, not restate it.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub mod dream;
@@ -39,6 +40,9 @@ pub struct MemoryPage {
     /// Evidence entries declared in the frontmatter. A count, not the evidence:
     /// the index routes and must not restate it.
     pub evidence: usize,
+    /// Target slugs of the page's declared edges (`derived_from`, `part_of`,
+    /// `contradicts`). Counts, not the labels: the index routes a walk.
+    pub edges: Vec<String>,
     /// Host-owned sampling weight; `None` until the host records a read.
     pub weight: Option<f64>,
     /// Body length in characters, the fixed floor of the removal rule.
@@ -146,6 +150,7 @@ fn parse_page(path: &Path) -> Option<MemoryPage> {
         .get("evidence")
         .and_then(serde_yaml::Value::as_sequence)
         .map_or(0, Vec::len);
+    let edges = edge_slugs(&fields);
     Some(MemoryPage {
         slug,
         kind: field("type").unwrap_or_else(|| "other".to_string()),
@@ -155,9 +160,37 @@ fn parse_page(path: &Path) -> Option<MemoryPage> {
         updated: field("updated").or_else(|| field("checked")),
         path: path.to_path_buf(),
         evidence,
+        edges,
         weight: fields.get("weight").and_then(serde_yaml::Value::as_f64),
         body_chars: body.trim().chars().count(),
     })
+}
+
+/// The slugs a page declares as its graph edges. An edge field may be one
+/// scalar or a list; a slug is anything non-empty.
+fn edge_slugs(fields: &serde_yaml::Value) -> Vec<String> {
+    const EDGE_KEYS: [&str; 3] = ["derived_from", "part_of", "contradicts"];
+    let mut edges = Vec::new();
+    for key in EDGE_KEYS {
+        let Some(value) = fields.get(key) else {
+            continue;
+        };
+        if let Some(slug) = value.as_str() {
+            if !slug.is_empty() {
+                edges.push(slug.to_string());
+            }
+        }
+        if let Some(items) = value.as_sequence() {
+            edges.extend(
+                items
+                    .iter()
+                    .filter_map(serde_yaml::Value::as_str)
+                    .filter(|slug| !slug.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    edges
 }
 
 /// The frontmatter block and the body after it. A page without frontmatter is
@@ -471,10 +504,18 @@ const LADDER: [Rung; 4] = [
 #[must_use]
 pub fn render_index(pages: &[MemoryPage], budget_chars: usize) -> MemoryIndex {
     let fingerprint = fingerprint(pages);
+    // Backlinks need the whole store: `backlinks[slug]` is how many pages name
+    // it in an edge field, whatever their own type directory.
+    let mut backlinks: HashMap<&str, usize> = HashMap::new();
+    for page in pages {
+        for target in &page.edges {
+            *backlinks.entry(target.as_str()).or_default() += 1;
+        }
+    }
     let mut text = String::new();
     let mut settled = 0_u8;
     for (index, rung) in LADDER.into_iter().enumerate() {
-        text = render_with(pages, rung);
+        text = render_with(pages, rung, &backlinks);
         settled = u8::try_from(index).unwrap_or(u8::MAX);
         if text.chars().count() <= budget_chars {
             break;
@@ -487,7 +528,7 @@ pub fn render_index(pages: &[MemoryPage], budget_chars: usize) -> MemoryIndex {
     }
 }
 
-fn render_with(pages: &[MemoryPage], rung: Rung) -> String {
+fn render_with(pages: &[MemoryPage], rung: Rung, backlinks: &HashMap<&str, usize>) -> String {
     use std::fmt::Write as _;
 
     let total = pages.len();
@@ -518,6 +559,11 @@ fn render_with(pages: &[MemoryPage], rung: Rung) -> String {
                 if let Some(hook) = &page.hook {
                     let _ = write!(out, "\n  · read when: {}", truncate(hook, rung.hook_cap));
                 }
+            }
+            let out_edges = page.edges.len();
+            let back_edges = backlinks.get(page.slug.as_str()).copied().unwrap_or(0);
+            if out_edges + back_edges > 0 {
+                let _ = write!(out, "\n  · links: {out_edges} out / {back_edges} in");
             }
             out.push('\n');
         }
@@ -595,6 +641,14 @@ fn fingerprint(pages: &[MemoryPage]) -> String {
         hasher.update(b"\0");
         hasher.update(page.updated.as_deref().unwrap_or("").as_bytes());
         hasher.update(b"\0");
+        // Edges are part of the routing graph: an edit that adds or drops one
+        // changes what the index says, so it must unfreeze the digest.
+        for target in &page.edges {
+            hasher.update(b"edge\0");
+            hasher.update(target.as_bytes());
+            hasher.update(b"\0");
+        }
+        hasher.update(b"edges-end\0");
     }
     format!("{:x}", hasher.finalize())
 }
@@ -645,6 +699,7 @@ mod tests {
             updated: None,
             path: PathBuf::from(format!("/pages/{kind}/{slug}.md")),
             evidence: 0,
+            edges: Vec::new(),
             weight: None,
             body_chars: 0,
         }
@@ -660,6 +715,30 @@ mod tests {
         assert!(index.text.contains("world 1 / model 1"));
         assert!(index.text.contains("## world (1)"));
         assert!(index.text.contains("· read when: touching globs"));
+        // No edges declared: no links line, the index stays lean.
+        assert!(!index.text.contains("· links:"));
+    }
+
+    #[test]
+    fn index_shows_edge_counts_and_backlinks() {
+        let mut hub = page("hub", "model", "the hub", Some("when routing"));
+        hub.edges = vec!["spoke".to_string(), "leaf".to_string()];
+        let mut spoke = page("spoke", "observation", "the spoke", Some("when walking"));
+        spoke.edges = vec!["hub".to_string()];
+        let pages = vec![hub, spoke];
+        let index = render_index(&pages, 10_000);
+        // hub: 2 edges out, spoke names it back.
+        assert!(index.text.contains("· links: 2 out / 1 in"));
+        // spoke: 1 edge out, hub names it back.
+        assert!(index.text.contains("· links: 1 out / 1 in"));
+    }
+
+    #[test]
+    fn an_edge_edit_unfreezes_the_digest_fingerprint() {
+        let plain = page("m1", "model", "a rule", Some("when editing"));
+        let mut linked = page("m1", "model", "a rule", Some("when editing"));
+        linked.edges = vec!["m2".to_string()];
+        assert_ne!(fingerprint(&[plain]), fingerprint(&[linked]));
     }
 
     #[test]
