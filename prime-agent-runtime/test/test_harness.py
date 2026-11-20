@@ -519,6 +519,7 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertEqual(os.stat(state.file_path).st_mode & 0o777, 0)
 
+    @unittest.skipIf(os.name == "nt", "POSIX mode bits and umask")
     def test_save_preserves_restrictive_file_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
@@ -529,6 +530,7 @@ class HarnessStateTest(unittest.TestCase):
 
             self.assertEqual(os.stat(state.file_path).st_mode & 0o777, 0o600)
 
+    @unittest.skipIf(os.name == "nt", "POSIX mode bits and umask")
     def test_save_temp_file_is_never_looser_than_the_destination(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
@@ -654,6 +656,7 @@ class HarnessStateTest(unittest.TestCase):
                 lock_dir.rmdir()
             self.assertEqual(len(HarnessState(state_path).list("prompt")), 1)
 
+    @unittest.skipIf(os.name == "nt", "dead-owner reclaim relies on POSIX os.kill(pid, 0) semantics")
     def test_dead_lock_is_reclaimed_without_old_owner_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "harness_state.json"
