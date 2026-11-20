@@ -170,20 +170,6 @@ def _memory_dir(root: Path | None = None) -> Path:
     return _agent_dir() / _MEMORY_DIR_NAME
 
 
-def _memory_root_for(state_file: Path | None) -> Path:
-    """Where a state's pages live, derived from the state it belongs to.
-
-    `harness_state.json` sits under `<agent dir>/harness/`, so pages for it are
-    `<agent dir>/memory/`. Following the state instead of the process environment
-    keeps two states in one process from sharing (and corrupting) one page store.
-    """
-    if state_file is None:
-        return _memory_dir()
-    parent = state_file.parent
-    base = parent.parent if parent.name == "harness" else parent
-    return base / _MEMORY_DIR_NAME
-
-
 def _memory_pages_dir(root: Path | None = None) -> Path:
     return _memory_dir(root) / _MEMORY_PAGES_DIR_NAME
 
@@ -1247,8 +1233,13 @@ class HarnessState:
 
     @property
     def _memory_root(self) -> Path:
-        """Where this state's pages live: beside the state, not in the process env."""
-        return _memory_root_for(self.file_path)
+        """The one page store: ``<agent dir>/memory``, never beside this state file.
+
+        Memory pages are global. Deriving the root from ``self.file_path`` sent a
+        session-local state's pages into ``session-artifacts/<id>/memory``, where no
+        digest ever read them.
+        """
+        return _memory_dir()
 
     def _require_page_store(self) -> None:
         """An in-memory state has no page store, and must not borrow the env one."""

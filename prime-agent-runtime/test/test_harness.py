@@ -1681,6 +1681,21 @@ class HarnessMemoryPagesTest(unittest.TestCase):
 
             self.assertIsNone(state.get("memory", "local_note"))
 
+    def test_session_local_state_still_writes_to_the_agent_dir_pages(self) -> None:
+        with page_store() as agent_dir, tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "session-artifacts" / "sid"
+            state = HarnessState(state_dir / "harness" / "harness_state.json")
+
+            entry = state.create_memory("Tea notes", "One store.", id="tea")
+
+            page = Path(entry.metadata["page"])
+            self.assertEqual(
+                page, (agent_dir / "memory" / "pages" / "experience" / "tea.md").resolve()
+            )
+            self.assertTrue(page.exists())
+            self.assertFalse((state_dir / "memory").exists())
+            self.assertIn("tea", harness_module.memory_pages(agent_dir / "memory"))
+
     def test_delete_memory_refuses_a_page_with_evidence(self) -> None:
         with page_store(), tempfile.TemporaryDirectory() as temp_dir:
             state = HarnessState(Path(temp_dir) / "harness_state.json")
