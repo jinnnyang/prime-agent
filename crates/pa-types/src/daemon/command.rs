@@ -379,6 +379,10 @@ pub enum DaemonCommand {
         id: Option<String>,
         active_session_id: String,
         message: String,
+        /// Queue only into a running turn: an idle, paused, or suspended
+        /// session answers `{queued: false}` and starts nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        require_busy: Option<bool>,
         #[serde(flatten)]
         input: PromptInput,
         #[serde(flatten)]
@@ -562,6 +566,18 @@ pub enum DaemonCommand {
     ListPersistentShells {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
+    /// The saved sessions whose user or assistant message text contains `query`
+    /// (case-insensitive). Rust-native extension, advertised by the `session_content_search`
+    /// capability.
+    SearchSessionContent {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_dir: Option<String>,
+        query: String,
         #[serde(flatten)]
         rest: JsonMap,
     },

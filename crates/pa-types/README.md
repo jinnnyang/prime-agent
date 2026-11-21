@@ -4,41 +4,17 @@ The single shared vocabulary crate. Nothing else is shared between crates.
 
 ## Scope
 
-`compaction::is_valid_threshold_percent` is the shared percentage-domain validator
-used by settings deserialization, persistence, runtime policy, and the TUI.
-Wire and domain types + serde only: AI messages/content blocks/tool calls/usage/stream events, session JSONL entry schema, daemon wire protocol messages, worker frames.
+`compaction::is_valid_threshold_percent` is the shared percentage-domain validator used by settings deserialization, persistence, runtime policy, and the TUI. Wire and domain types + serde only: AI messages/content blocks/tool calls/usage/stream events, session JSONL entry schema, daemon wire protocol messages, worker frames.
 
 Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui/pa-cli) live here because pa-tui depends on pa-types alone:
 - `daemon::framing`: the private-frame codec of the worker socket (direct-attach clients speak it too).
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
-- `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the
-  goal engine (pa-core), the daemon wire (`goal_update` session events and
-  the attach snapshot's `state.goal`), and the TUI (announcement rows, tray
-  label). The goal *engine* (validation, accounting, continuation prompts)
-  is pa-core's.
-- `slash_commands`: the builtin slash-command table every surface shares
-  (the TUI dispatch + autocomplete, the session engine's command admission,
-  CLI suggestion help) plus its pure parse/suggestion helpers — the TS
-  product keeps the same single table in core and imports it from its TUI.
-- `incident`: the daemon incident classifier shared by the incident CLI
-  (pa-cli's `prime-agent incident`, TS `src/cli/incident.ts`) and the
-  agents-view incident notice (pa-tui's `incident_notices`, TS
-  `src/modes/agents-view/incident-notices.ts`) — pa-tui depends on
-  pa-types alone, and the TS product keeps the same single classifier in
-  `cli/incident.ts` with both halves importing it. Pure log-line parsing
-  (`agent.jsonl` records, per-daemon plain-text lines), worker pid
-  attribution, event classification, and the stall/burst/gap anomaly
-  computation — the message shapes are the TS regexes kept 1:1. The CLI's
-  log-file discovery, `--since`/`--until` window parsing, and report
-  rendering belong to pa-cli; the notice polling, rotation-safe
-  incremental reads, and dismissal horizons belong to pa-tui.
-- `themes`: the bundled theme definition files (`prime`/`dark`/`light`) as
-  pure data, shared by the TUI's theme loader (pa-tui renders terminal
-  colors from them) and the session HTML exporter (pa-core resolves them
-  into CSS variables). Everything built on top of the files — terminal
-  color rendering, export CSS generation, custom-theme discovery — belongs
-  to the consuming crates.
+- `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the goal engine (pa-core), the daemon wire (`goal_update` session events and the attach snapshot's `state.goal`), and the TUI (announcement rows, tray label). The goal *engine* (validation, accounting, continuation prompts) is pa-core's.
+- `inbox_notice`: the agent-inbox wire vocabulary (the inbox message class words, the notice rows' `inbox_notice` customType, the arrival/reminder class words, the `Agent inbox` sender identity) — one definition the session engine's row builder (pa-core), the daemon's queue lanes and strip provenance, and the TUI's decode all import (pa-tui cannot import the session engine, so a twin constant would drift silently).
+- `slash_commands`: the builtin slash-command table every surface shares (the TUI dispatch + autocomplete, the session engine's command admission, CLI suggestion help) plus its pure parse/suggestion helpers — the TS product keeps the same single table in core and imports it from its TUI.
+- `incident`: the daemon incident classifier shared by the incident CLI (pa-cli's `prime-agent incident`, TS `src/cli/incident.ts`) and the agents-view incident notice (pa-tui's `incident_notices`, TS `src/modes/agents-view/incident-notices.ts`) — pa-tui depends on pa-types alone, and the TS product keeps the same single classifier in `cli/incident.ts` with both halves importing it. Pure log-line parsing (`agent.jsonl` records, per-daemon plain-text lines), worker pid attribution, event classification, and the stall/burst/gap anomaly computation — the message shapes are the TS regexes kept 1:1. The CLI's log-file discovery, `--since`/`--until` window parsing, and report rendering belong to pa-cli; the notice polling, rotation-safe incremental reads, and dismissal horizons belong to pa-tui.
+- `themes`: the bundled theme definition files (`prime`/`dark`/`light`) as pure data, shared by the TUI's theme loader (pa-tui renders terminal colors from them) and the session HTML exporter (pa-core resolves them into CSS variables). Everything built on top of the files — terminal color rendering, export CSS generation, custom-theme discovery — belongs to the consuming crates.
 
 - `daemon::update_flow`: the update-flow state machine's shared vocabulary:
   the coordinator FSM states + legal

@@ -213,6 +213,7 @@ impl TurnBoundaryRequests {
                         "input": model_info.input.iter().map(|input| match input {
                             pa_types::ai::ModelInput::Text => "text",
                             pa_types::ai::ModelInput::Image => "image",
+                            pa_types::ai::ModelInput::Video => "video",
                         }).collect::<Vec<&str>>(),
                     }))
                 })
@@ -425,7 +426,6 @@ impl SessionEngine {
         &self,
         model: &pa_types::ai::Model,
         api_key: Option<String>,
-        global_harness_dir: std::path::PathBuf,
     ) -> Option<tokio::task::JoinHandle<anyhow::Result<super::refine::CommittedRefinement>>> {
         let pending = self.turn_boundary.take_refine().await?;
         Some(self.session.start_refinement(
@@ -437,7 +437,6 @@ impl SessionEngine {
             super::refine::RefinementSource::SelfRefine,
             model.clone(),
             api_key,
-            global_harness_dir,
         ))
     }
 }

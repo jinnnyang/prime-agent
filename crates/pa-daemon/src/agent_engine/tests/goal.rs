@@ -1083,6 +1083,163 @@ fn active_goal_aborted_turn_row_broadcasts_and_goal_accounting_skips_it() {
 }
 
 #[test]
+fn a_goal_change_made_under_a_held_driver_lock_reaches_the_turn_end_update() {
+    // `DoneAborted`: a turn cancelled at admission.
+    assert_turn_end_publishes_a_held_goal_change("cancelled at admission", true);
+    // `Done`: a session command turn, the terminal path of `/goal pause`.
+    assert_turn_end_publishes_a_held_goal_change("/autonomous status", false);
+}
+
+fn assert_turn_end_publishes_a_held_goal_change(message: &str, aborted: bool) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        cwd: dir.path().to_path_buf(),
+        agent_dir: dir.path().join("agent"),
+        provider: None,
+        model: None,
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: Some(
+            json!({ "engine": "faux", "responses": [{ "text": "goal start reply" }] }).to_string(),
+        ),
+        supervisor_link: None,
+        telemetry_disabled: None,
+        cron_store: None,
+        queued_steering_probe: None,
+    })
+    .unwrap();
+    let engine = std::sync::Arc::new(engine);
+    engine.register_arc();
+    let _goal_work = goal_admission_collector(&engine);
+    let mut events: Vec<EngineEvent> = Vec::new();
+    admit(
+        &engine,
+        "/goal publish every change".to_string(),
+        &mut events,
+    );
+    assert_eq!(engine.goal_state_value()["status"], json!("active"));
+    // Another task pauses the goal and still holds the driver lock while
+    // the next turn ends (a short holder like the owed-continuation retry).
+    let handles = engine.live_handles().expect("live session").goal.clone();
+    let mut driver = engine.runtime.block_on(handles.driver.lock());
+    {
+        let mut session = engine.runtime.block_on(handles.session.lock());
+        driver.pause(&mut session, "Paused by user").unwrap();
+    }
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let turn_engine = std::sync::Arc::clone(&engine);
+    let message = message.to_string();
+    let turn = std::thread::spawn(move || {
+        let mut events: Vec<EngineEvent> = Vec::new();
+        turn_engine.run_prompt(
+            0,
+            PromptRequest {
+                batch: Vec::new(),
+                images: Vec::new(),
+                message,
+                source: "user".to_string(),
+                agent_message_id: None,
+                custom_message: None,
+            },
+            &|| aborted,
+            &mut |event| {
+                if matches!(event, EngineEvent::Done(_) | EngineEvent::DoneAborted) {
+                    done_tx.send(()).unwrap();
+                }
+                events.push(event);
+                true
+            },
+        );
+        events
+    });
+    done_rx.recv().expect("the turn ends");
+    drop(driver);
+    let events = turn.join().expect("the turn settles");
+    let update = events
+        .iter()
+        .find_map(|event| match event {
+            EngineEvent::GoalUpdate { goal } => Some(goal.clone()),
+            _ => None,
+        })
+        .expect("the turn end publishes the paused goal");
+    assert_eq!(update["status"], json!("paused"), "events: {events:?}");
+    assert_eq!(engine.goal_state_value()["status"], json!("paused"));
+}
+
+#[test]
+fn active_goal_survives_an_abort_that_lands_before_the_provider_stream() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        cwd: dir.path().to_path_buf(),
+        agent_dir: dir.path().join("agent"),
+        provider: None,
+        model: None,
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: Some(
+            json!({
+                "engine": "faux",
+                "responses": [{ "text": "goal start reply" }, { "text": "never served" }],
+            })
+            .to_string(),
+        ),
+        supervisor_link: None,
+        telemetry_disabled: None,
+        cron_store: None,
+        queued_steering_probe: None,
+    })
+    .unwrap();
+    let engine = std::sync::Arc::new(engine);
+    engine.register_arc();
+    let _goal_work = goal_admission_collector(&engine);
+    let mut events: Vec<EngineEvent> = Vec::new();
+    admit(
+        &engine,
+        "/goal survive the early abort".to_string(),
+        &mut events,
+    );
+    assert_eq!(engine.goal_state_value()["status"], json!("active"));
+    // The Stop lands while the run persists its user row: after the run
+    // started, before the loop reaches the provider.
+    let agent = engine
+        .built_handles()
+        .map(|handles| handles.turn_agent.clone())
+        .expect("the goal start built the session");
+    let abort_target = std::sync::Arc::downgrade(&agent);
+    let _abort_at_user_row = engine
+        .runtime
+        .block_on(agent.subscribe(move |event, _signal| {
+            if let pa_agent::types::AgentEvent::MessageEnd {
+                message: pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::User(_)),
+            } = &event
+            {
+                if let Some(agent) = abort_target.upgrade() {
+                    agent.abort();
+                }
+            }
+            Box::pin(async { Ok(()) })
+        }));
+    let mut events: Vec<EngineEvent> = Vec::new();
+    admit(
+        &engine,
+        "aborted before the stream".to_string(),
+        &mut events,
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, EngineEvent::DoneAborted)),
+        "the turn settles as aborted: {events:?}"
+    );
+    let after = engine.goal_state_value();
+    assert_eq!(after["status"], json!("active"), "state: {after:?}");
+}
+
+#[test]
 fn shared_window_goal_seed_matches_persisted_goal_state() {
     let header = || {
         json!({
