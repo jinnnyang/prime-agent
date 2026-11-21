@@ -1200,6 +1200,7 @@ mod tests {
     /// Seed one memory entry into a harness store dir, the shape a prior
     /// refinement wrote. `merge_harness_states` re-scopes by source store,
     /// so the entry's scope field only names the store it was seeded into.
+    #[cfg(unix)]
     fn seed_store_memory(dir: &std::path::Path, id: &str, scope: HarnessScope) {
         let mut state = crate::refinement::empty_harness_state();
         state
