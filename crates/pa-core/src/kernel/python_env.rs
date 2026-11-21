@@ -102,44 +102,15 @@ fn reaches_boundary(
     }
 }
 
-/// The single global uv install is a trusted executable even when HOME is an
-/// enclosing Git checkout. Without a project, nothing project-internal can be
-/// selected, so the pinned path alone decides. Only the nearest checkout of the
-/// project, existing or vanished, can exclude it. No other HOME path receives
-/// this exception.
+/// The global uv install at `$HOME/.local/bin` is trusted only when no Git
+/// checkout encloses the project. Without a project, the pinned path alone
+/// decides. Otherwise the nearest checkout of the project, existing or
+/// vanished, must not contain the uv path.
 pub(crate) fn safe_home_uv(path: &Path, project: Option<&Path>) -> bool {
-    safe_home_uv_with_home(
-        path,
-        project,
-        pa_types::platform::home_dir().as_deref(),
-        account_home().as_deref(),
-    )
+    safe_home_uv_with_home(path, project, pa_types::platform::home_dir().as_deref())
 }
 
-/// The account's home from the user database, independent of `HOME`.
-#[cfg(unix)]
-fn account_home() -> Option<PathBuf> {
-    nix::unistd::User::from_uid(nix::unistd::getuid())
-        .ok()
-        .flatten()
-        .map(|user| user.dir)
-}
-
-/// No dependency exposes the profile known folder, so Windows takes
-/// `USERPROFILE`.
-#[cfg(not(unix))]
-fn account_home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .filter(|profile| !profile.is_empty())
-        .map(PathBuf::from)
-}
-
-fn safe_home_uv_with_home(
-    path: &Path,
-    project: Option<&Path>,
-    home: Option<&Path>,
-    account_home: Option<&Path>,
-) -> bool {
+fn safe_home_uv_with_home(path: &Path, project: Option<&Path>, home: Option<&Path>) -> bool {
     let Some(home) = home else {
         return false;
     };
@@ -178,16 +149,7 @@ fn safe_home_uv_with_home(
         return true;
     }
     let active_boundary = nearest_checkout.unwrap_or(&project);
-    // The boundary being the account's real home (a launch from home, or a
-    // home-dotfiles checkout) is the user's own territory. HOME pointed
-    // elsewhere, such as a wrapper or CI setting HOME into a repository, keeps
-    // the rejection: a checked-in uv at $HOME/.local/bin must not reach the
-    // kernel bootstrap.
-    let home_is_account_home = account_home
-        .and_then(|account_home| account_home.canonicalize().ok())
-        .is_some_and(|account_home| paths_equal(&account_home, &canonical_home));
-    (home_is_account_home && paths_equal(active_boundary, &canonical_home))
-        || !path_starts_with(&canonical_uv, active_boundary)
+    !path_starts_with(&canonical_uv, active_boundary)
 }
 
 /// Drop ambient Python import roots after caller overrides are applied.
@@ -520,11 +482,10 @@ mod tests {
         std::fs::create_dir(home.join("repo/.git")).unwrap();
         std::fs::create_dir(nested.join(".git")).unwrap();
         std::fs::write(&uv, "uv").unwrap();
-        assert!(safe_home_uv_with_home(&uv, Some(&nested), Some(&home), Some(&home)));
+        assert!(safe_home_uv_with_home(&uv, Some(&nested), Some(&home)));
         assert!(safe_home_uv_with_home(
             &uv,
             Some(&nested.join("gone")),
-            Some(&home),
             Some(&home)
         ));
     }
@@ -639,7 +600,6 @@ mod tests {
         assert!(safe_home_uv_with_home(
             &uv,
             Some(filesystem_root),
-            Some(&home),
             Some(&home)
         ));
     }
@@ -659,10 +619,10 @@ mod tests {
         std::fs::create_dir_all(untrusted_uv.parent().unwrap()).unwrap();
         std::fs::write(&uv, "uv").unwrap();
         std::fs::write(&untrusted_uv, "uv").unwrap();
-        assert!(safe_home_uv_with_home(&uv, None, Some(&home), Some(&home)));
-        assert!(!safe_home_uv_with_home(&untrusted_uv, None, Some(&home), Some(&home)));
+        assert!(safe_home_uv_with_home(&uv, None, Some(&home)));
+        assert!(!safe_home_uv_with_home(&untrusted_uv, None, Some(&home)));
         let vanished = root.path().join("vanished-cwd");
-        assert!(safe_home_uv_with_home(&uv, Some(&vanished), Some(&home), Some(&home)));
+        assert!(safe_home_uv_with_home(&uv, Some(&vanished), Some(&home)));
     }
 
     #[test]
@@ -680,104 +640,36 @@ mod tests {
         assert!(!safe_home_uv_with_home(
             &uv,
             Some(&home.join("work/vanished")),
-            Some(&home),
             Some(&home)
         ));
     }
 
     #[test]
-    fn only_the_direct_home_uv_is_trusted() {
+    fn home_inside_a_checkout_rejects_the_home_uv() {
         let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        let tool_dir = home.join(".local/bin");
+        let repo = root.path().join("repo");
+        let home = repo.join("home");
         let uv_name = if cfg!(windows) { "uv.exe" } else { "uv" };
-        let uv = tool_dir.join(uv_name);
-        let untrusted = home.join("tools");
-        let untrusted_uv = untrusted.join(uv_name);
-        std::fs::create_dir_all(&tool_dir).unwrap();
-        std::fs::create_dir_all(&untrusted).unwrap();
+        let uv = home.join(".local/bin").join(uv_name);
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(uv.parent().unwrap()).unwrap();
         std::fs::write(&uv, "uv").unwrap();
-        std::fs::write(&untrusted_uv, "uv").unwrap();
-        // Launching from the account's home directory itself must not hide
-        // the global install (regression: the boundary check used to reject it).
-        assert!(safe_home_uv_with_home(
-            &uv,
-            Some(&home),
-            Some(&home),
-            Some(&home)
-        ));
-        assert!(!safe_home_uv_with_home(
-            &untrusted_uv,
-            Some(&home),
-            Some(&home),
-            Some(&home)
-        ));
-        // Without a resolvable account home there is no exception.
-        assert!(!safe_home_uv_with_home(&uv, Some(&home), Some(&home), None));
-        #[cfg(unix)]
-        {
-            std::fs::remove_file(&uv).unwrap();
-            std::fs::remove_dir(&tool_dir).unwrap();
-            std::os::unix::fs::symlink(&untrusted, &tool_dir).unwrap();
-            assert!(!safe_home_uv_with_home(
-                &uv,
-                Some(&home),
-                Some(&home),
-                Some(&home)
-            ));
-            std::fs::remove_file(&tool_dir).unwrap();
-            std::fs::create_dir(&tool_dir).unwrap();
-            std::fs::write(&uv, "uv").unwrap();
-        }
-        // Home being a Git checkout changes nothing: the boundary is still
-        // the user's own territory.
-        std::fs::create_dir(home.join(".git")).unwrap();
-        assert!(safe_home_uv_with_home(
-            &uv,
-            Some(&home),
-            Some(&home),
-            Some(&home)
-        ));
-        let nested = home.join("project");
-        let nested_tools = nested.join("tools");
-        std::fs::create_dir_all(&nested_tools).unwrap();
-        std::fs::create_dir(nested.join(".git")).unwrap();
-        assert!(safe_home_uv_with_home(
-            &uv,
-            Some(&nested),
-            Some(&home),
-            Some(&home)
-        ));
-        assert!(!safe_executable_path(&untrusted_uv, Some(&nested)));
-        assert!(!safe_home_uv_with_home(
-            &untrusted_uv,
-            Some(&nested),
-            Some(&home),
-            Some(&home)
-        ));
-        assert!(!safe_home_uv_with_home(
-            &nested_tools.join(uv_name),
-            Some(&nested),
-            Some(&home),
-            Some(&home)
-        ));
+        assert!(!safe_home_uv_with_home(&uv, Some(&home), Some(&home)));
+        assert!(!safe_home_uv_with_home(&uv, Some(&repo), Some(&home)));
     }
 
     #[test]
     fn home_uv_redirected_into_a_repository_is_rejected() {
         // A wrapper or CI can point HOME into a repository, or at its root
-        // (`HOME=$PWD`). HOME is then not the account's home, so the
-        // checked-in uv at $HOME/.local/bin must not reach the kernel
+        // (`HOME=$PWD`). The checked-in uv at $HOME/.local/bin must not reach the
         // bootstrap from any launch inside the repository.
         let root = tempfile::tempdir().unwrap();
-        let account = root.path().join("account");
         let repo = root.path().join("repo");
         let home = repo.join("home");
         let project = repo.join("app");
         let uv_name = if cfg!(windows) { "uv.exe" } else { "uv" };
         let uv = home.join(".local/bin").join(uv_name);
         let root_uv = repo.join(".local/bin").join(uv_name);
-        std::fs::create_dir_all(&account).unwrap();
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(uv.parent().unwrap()).unwrap();
@@ -785,23 +677,12 @@ mod tests {
         std::fs::write(&uv, "uv").unwrap();
         std::fs::write(&root_uv, "uv").unwrap();
         for launch in [&project, &home] {
-            assert!(!safe_home_uv_with_home(
-                &uv,
-                Some(launch),
-                Some(&home),
-                Some(&account)
-            ));
+            assert!(!safe_home_uv_with_home(&uv, Some(launch), Some(&home)));
         }
         for launch in [&repo, &project] {
-            assert!(!safe_home_uv_with_home(
-                &root_uv,
-                Some(launch),
-                Some(&repo),
-                Some(&account)
-            ));
+            assert!(!safe_home_uv_with_home(&root_uv, Some(launch), Some(&repo)));
         }
     }
-
 
     #[test]
     fn filesystem_root_without_git_allows_absolute_uv_paths() {

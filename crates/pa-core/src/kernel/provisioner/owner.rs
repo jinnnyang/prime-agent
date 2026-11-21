@@ -804,6 +804,26 @@ mod tests {
     }
 
     #[test]
+    fn a_killed_boot_never_takes_the_dispose_snapshot_policy() {
+        let mut state = OwnerState {
+            slot: Slot::Disposed {
+                snapshot: true,
+                pending: Pending::Boot(boot(2)),
+                waiters: Vec::new(),
+            },
+            doomed: vec![boot(1)],
+            ..OwnerState::default()
+        };
+        // Generation 1 was killed before the dispose: its teardown must not
+        // flush, even though the dispose asked for a snapshot.
+        assert_eq!(state.teardown_policy(1), (false, None));
+        // The disposed generation still follows the dispose policy.
+        let (flush, gate) = state.teardown_policy(2);
+        assert!(flush);
+        assert!(gate.is_some());
+    }
+
+    #[test]
     fn a_stop_armed_for_the_boot_covers_its_teardown_flush() {
         let mut state = OwnerState::default();
         let (stop, _stopped) = tokio::sync::oneshot::channel();
