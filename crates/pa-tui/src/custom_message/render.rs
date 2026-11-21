@@ -3,12 +3,14 @@
 //! module; compaction outcomes render through the chat status rows.
 
 use super::{
-    AgentMessageDirection, AgentMessageRow, CustomPanelRow, ShellCompletionRow, AGENT_MESSAGE_LABEL,
+    AgentMessageDirection, AgentMessageRow, CustomPanelRow, InboxNoticeRow, ShellCompletionRow,
+    AGENT_MESSAGE_LABEL,
 };
 use crate::chat::Detail;
 use crate::theme::{Theme, ThemeColor};
 use crate::width::{pad_line, str_width, truncate_line, wrap_line, wrap_text};
 use crate::{Line, Span};
+use pa_types::inbox_notice::{INBOX_NOTICE_CLASS_REMINDER, INBOX_NOTICE_SENDER};
 use ratatui::style::Style;
 
 pub(crate) fn spacer() -> Line {
@@ -90,6 +92,53 @@ pub(crate) fn render_agent_message(
     if detail.tool_output_expanded() {
         out.extend(agent_message_body(&row.message, theme, width));
     }
+    out
+}
+
+/// The inbox-notice summary line: the agent-message envelope geometry
+/// (envelope + `Agent inbox` label + dim message count) — `3 new
+/// messages` for an arrival, `3 unread messages` for a reminder, the bare
+/// noun when the row carries no count.
+pub(crate) fn inbox_notice_summary_line(row: &InboxNoticeRow, theme: &Theme) -> Line {
+    let state = if row.class == INBOX_NOTICE_CLASS_REMINDER {
+        "unread"
+    } else {
+        "new"
+    };
+    let messages = match row.count {
+        Some(1) => format!("1 {state} message"),
+        Some(count) => format!("{count} {state} messages"),
+        None => format!("{state} messages"),
+    };
+    vec![
+        Span::styled("\u{2709}".to_string(), theme.fg_style(ThemeColor::Success)),
+        Span::raw(" "),
+        Span::styled(
+            INBOX_NOTICE_SENDER.to_string(),
+            theme.fg_style(ThemeColor::Muted),
+        ),
+        Span::styled(" \u{b7} ".to_string(), theme.fg_style(ThemeColor::Dim)),
+        Span::styled(messages, theme.fg_style(ThemeColor::Dim)),
+    ]
+}
+
+/// The inbox-notice rows: a leading blank (spacing-driven), the summary
+/// header, then the notice text body ALWAYS visible (no expansion gate —
+/// the waiting count and the `rlm.inbox.read()` call-to-action never
+/// collapse away), the same `╰─`-guttered body the agent-message rows use.
+pub(crate) fn render_inbox_notice(
+    row: &InboxNoticeRow,
+    theme: &Theme,
+    width: usize,
+    leading: bool,
+) -> Vec<Line> {
+    let mut out = Vec::new();
+    if leading {
+        out.push(spacer());
+    }
+    let header = inbox_notice_summary_line(row, theme);
+    out.extend(text_rows(&header, width));
+    out.extend(agent_message_body(&row.text, theme, width));
     out
 }
 
@@ -380,6 +429,66 @@ mod tests {
             ],
             "{rows:?}"
         );
+    }
+
+    /// The inbox-notice header: the envelope geometry with the inbox as
+    /// the label and the announced message count beside it.
+    #[test]
+    fn inbox_notice_header_shape() {
+        let row = |class: &str, count: Option<u64>| InboxNoticeRow {
+            class: class.to_string(),
+            count,
+            text: "[inbox 19:14 UTC] 3 new messages".to_string(),
+        };
+        let rows = render_inbox_notice(&row("arrival", Some(3)), &theme(), 60, true);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert!(rows[0].is_empty());
+        let header = flat(&rows[1]);
+        assert_eq!(
+            header.trim_end(),
+            " \u{2709} Agent inbox \u{b7} 3 new messages"
+        );
+        // Colors: green envelope, muted inbox label, dim separator and
+        // count (the agent-message envelope styling).
+        assert_eq!(
+            rows[1][1],
+            Span::styled(
+                "\u{2709}".to_string(),
+                theme().fg_style(ThemeColor::Success)
+            )
+        );
+        assert_eq!(
+            rows[1][3],
+            Span::styled(
+                "Agent inbox".to_string(),
+                theme().fg_style(ThemeColor::Muted)
+            )
+        );
+        assert_eq!(
+            rows[1][4],
+            Span::styled(" \u{b7} ".to_string(), theme().fg_style(ThemeColor::Dim))
+        );
+        assert_eq!(
+            rows[1][5],
+            Span::styled(
+                "3 new messages".to_string(),
+                theme().fg_style(ThemeColor::Dim)
+            )
+        );
+        for (row, expected) in [
+            (row("reminder", Some(2)), "2 unread messages"),
+            (row("arrival", Some(1)), "1 new message"),
+            (row("reminder", None), "unread messages"),
+        ] {
+            let header = flat(&render_inbox_notice(&row, &theme(), 60, false)[0]);
+            assert_eq!(
+                header.trim_end(),
+                format!(" \u{2709} Agent inbox \u{b7} {expected}")
+            );
+        }
+        // The body's always-visible shape is pinned by the mod.rs gutter
+        // table and the headless frame test (render_inbox_notice takes no
+        // detail gate).
     }
 
     /// The un-boxed panel's label and body carry their shared spans with no box background.

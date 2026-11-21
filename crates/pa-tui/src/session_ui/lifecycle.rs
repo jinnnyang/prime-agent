@@ -4,11 +4,12 @@
 use super::{
     attach_capabilities, attach_data_from_response, create_session, last_assistant_text_of, mpsc,
     reconstruct, resume_hint_from_stats, ActivityUpdates, AgentView, BTreeMap, ChatEntry,
-    CompactionAbortNote, Context, DaemonClient, DaemonCommand, DockFold, Duration, GoalView,
-    HashSet, InteractiveOptions, LoaderTokenTracker, Map, ModelCatalogUpdate, PromptOrder,
-    PromptSubmitNote, ReattachOutcome, RebuildKind, RecoveryKind, ReloadNote, Result, ResyncBash,
-    SessionSelection, SessionUi, ShareNote, TranscriptPageNote, UpdateNote, Value,
-    EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS, UI_REQUEST_TIMEOUT_MS,
+    CompactionAbortNote, CompactionReason, CompactionState, Context, DaemonClient, DaemonCommand,
+    DockFold, Duration, GoalView, HashSet, InteractiveOptions, LoaderTokenTracker, Map,
+    ModelCatalogUpdate, Overlay, PromptOrder, PromptSubmitNote, ReattachOutcome, RebuildKind,
+    RecoveryKind, ReloadNote, Result, ResyncBash, SessionSelection, SessionUi, ShareNote,
+    TranscriptPageNote, UpdateNote, Value, EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS,
+    UI_REQUEST_TIMEOUT_MS,
 };
 
 impl SessionUi {
@@ -112,6 +113,10 @@ impl SessionUi {
             context: None,
             list_rows: Vec::new(),
             turn_active: false,
+            run_open: false,
+            run_outcome: crate::program_status::Status::Done,
+            outcome_after_compaction: None,
+            settled: None,
             turn_ends_seen: 0,
             last_prompt_turn_end: 0,
             steering_mode: "all".to_string(),
@@ -122,7 +127,6 @@ impl SessionUi {
             aborted_tools: HashSet::default(),
             last_assistant_text: None,
             osc_sink: crate::clipboard::OscSink::Stdout,
-            pending_confirm: None,
             traces: options.traces.clone(),
             provider_auth: options.provider_auth.clone(),
             pending_model_sign_in: None,
@@ -190,6 +194,7 @@ impl SessionUi {
             user_bash_started_at: None,
             user_bash_counter: 0,
             resync_bash: None,
+            attach_compacting: None,
             loader_anchor_ms: None,
             side_bash: None,
             side_bash_discarded: None,
@@ -394,6 +399,12 @@ impl SessionUi {
         };
         self.user_bash_running = resync_bash.snap_running;
         self.resync_bash = Some(resync_bash);
+        self.attach_compacting = Some(
+            state
+                .and_then(|state| state.get("isCompacting"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
         let reconstructed = reconstruct(&attach);
         let mounted_session_changes = previous != attach.active_session_id;
         self.active_session_id = attach.active_session_id;
@@ -488,14 +499,21 @@ impl SessionUi {
         self.pending_snapshot = Some(reconstructed.chat);
         self.loader_anchor_ms = reconstructed.last_user_prompt_ms;
         self.goal_view.seed(reconstructed.goal.unwrap_or_default());
+        self.settled = None;
+        self.outcome_after_compaction = None;
         // The resynced state owns the loader: a turn still live behind the
-        // re-attach keeps the spinner, one that died with the old link does not.
-        let streaming = attach.snapshot.get("state").is_some_and(|state| {
-            ["isStreaming", "isCompacting"]
-                .iter()
-                .any(|flag| state.get(flag).and_then(Value::as_bool).unwrap_or(false))
-        });
+        // re-attach keeps the spinner, one that died with the old link does
+        // not. A compaction in flight seeds the compaction loader instead
+        // (see `rebuild_view`): its `compaction_end` clears it.
+        let streaming = attach
+            .snapshot
+            .get("state")
+            .and_then(|state| state.get("isStreaming"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         self.turn_active = streaming;
+        self.run_open = streaming;
+        self.run_outcome = crate::program_status::Status::Done;
         self.streaming_index = None;
         // The turn-end watermark restarts only when the mounted session CHANGES: an end owed by the
         // detached session's stream must not pin the watermark (without the reset a later prompt's
@@ -570,7 +588,7 @@ impl SessionUi {
         // A rebind replaces the whole view: the previous session's open bash view
         // dies with its transcript, and the tok/sec stats restart per session.
         if matches!(kind, RebuildKind::Rebind) {
-            view.bash_view = None;
+            view.close_overlay_if(|overlay| matches!(overlay, Overlay::Bash(_)));
             // The factory view dies the same death — it snapshots the
             // previous session's kernel runs, and its refresh lane must
             // not keep polling the new session's kernel for a view
@@ -593,22 +611,39 @@ impl SessionUi {
                 .as_deref()
                 .is_some_and(|session| session != self.session_id)
             {
-                view.factory_view = None;
+                view.close_overlay_if(|overlay| matches!(overlay, Overlay::Factory(_)));
                 self.factory_selected_run = None;
                 self.factory_view_session = None;
                 self.factory_graph = serde_json::json!({"runs": []});
             }
             // An agents-view panel the rebind tore down takes its return-to-agents-view flag
             // with it; a kept factory page keeps it.
-            self.panel_returns_to_agents_view &= view.factory_view.is_some();
+            self.panel_returns_to_agents_view &= matches!(view.overlay, Some(Overlay::Factory(_)));
             // The goal panel dies with the old session too: it is a
             // snapshot of the previous session's goal state, and until
             // the new session's own `goal_update` lands it would keep
             // owning the frame over the rebind with stale content.
-            view.goal_panel = None;
-            view.info_panel = None;
+            view.close_overlay_if(|overlay| matches!(overlay, Overlay::Goal(_) | Overlay::Info(_)));
             self.speed_stats = None;
             view.chrome.speed_text = None;
+        }
+        // Retry countdowns belong to the previous event stream. The fresh
+        // snapshot's activity flags own this attachment; only a new retry
+        // event can establish a countdown for it.
+        view.retry = None;
+        // A compaction in flight behind the attach keeps its loader until its
+        // `compaction_end`; the snapshot names no reason, so the wire's
+        // fallback (`manual`) labels it.
+        if let Some(compacting) = self.attach_compacting.take() {
+            view.compaction = None;
+            if compacting {
+                view.compaction_generation += 1;
+                view.compaction = Some(CompactionState {
+                    reason: CompactionReason::Manual,
+                    custom_instructions: None,
+                    summary: String::new(),
+                });
+            }
         }
         let snapshot = self.pending_snapshot.take().unwrap_or_default();
         self.replace_transcript(snapshot, view);
@@ -703,7 +738,7 @@ impl SessionUi {
         view.follow();
         // An open `/heartbeats` picker follows the rebuilt session's catalog — otherwise a rebind
         // leaves it showing the previous session's rows.
-        if let Some(picker) = view.heartbeats_picker.as_mut() {
+        if let Some(Overlay::Heartbeats(picker)) = view.overlay.as_mut() {
             picker.apply_catalog(self.heartbeat_catalog.clone(), None);
         }
         // The brand splash is the EMPTY chat's header: a rebuild that folds a non-empty transcript
@@ -877,14 +912,20 @@ mod backfill_tests {
                 &mut view,
             );
             session.rebuild_view(&mut view, &RebuildKind::Rebind);
-            assert!(view.bash_view.is_none(), "the rebind tore the panel down");
+            assert!(
+                !matches!(view.overlay, Some(Overlay::Bash(_))),
+                "the rebind tore the panel down"
+            );
             session.open_bash_view(&mut view);
             let esc = crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Esc,
                 crossterm::event::KeyModifiers::NONE,
             );
             session.handle_bash_view_key(esc, &mut view).unwrap();
-            assert!(view.bash_view.is_none(), "Esc closed the dock's panel");
+            assert!(
+                !matches!(view.overlay, Some(Overlay::Bash(_))),
+                "Esc closed the dock's panel"
+            );
             assert!(
                 !session.open_agents_view && !session.exit_requested,
                 "the dock's panel closes to the dock"
@@ -934,11 +975,10 @@ mod backfill_tests {
                         &mut view,
                     );
                 }
-                let lines = view.bash_view.as_ref().expect("the Bash panel").render(
-                    &theme(),
-                    80,
-                    view.editor.keybindings(),
-                );
+                let Some(Overlay::Bash(bash_view)) = &view.overlay else {
+                    panic!("the Bash panel is open");
+                };
+                let lines = bash_view.render(&theme(), 80, view.editor.keybindings());
                 let selected = lines
                     .iter()
                     .map(|line| {
@@ -958,6 +998,30 @@ mod backfill_tests {
         })
         .await
         .expect("mock session open and both panel opens complete within ten seconds");
+    }
+
+    /// A reload outcome closes only the reload box: the settings menu that started the reload stays
+    /// open.
+    #[tokio::test]
+    async fn a_reload_outcome_leaves_the_settings_menu_open() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("reload.sock");
+            let (mut session, server) = mock_session(&socket, mpsc::unbounded_channel().0).await;
+            let mut view = AgentView::new(crate::theme::Theme::builtin(
+                "prime",
+                crate::theme::ColorMode::TrueColor,
+            ));
+            session.open_settings_menu(&mut view).await;
+            session
+                .apply_reload_outcome(Err("reload failed".to_string()), &mut view)
+                .await;
+            assert!(matches!(view.overlay, Some(Overlay::Settings(_))));
+            drop(session);
+            server.abort();
+        })
+        .await
+        .expect("mock session open and reload outcome complete within ten seconds");
     }
 
     /// Every successful attach clears an expired re-attach window's failure: the flag is

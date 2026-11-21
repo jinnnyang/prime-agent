@@ -353,6 +353,16 @@ impl SessionEngine for AgentSessionEngine {
         }
     }
 
+    /// The live-slot identity check: the store a replacement retired is
+    /// not the session's published inbox (the consumed withdrawal's
+    /// re-check consults this under the core lock).
+    fn inbox_is_live(
+        &self,
+        inbox: &std::sync::Arc<pa_core::session_engine::inbox::SessionInbox>,
+    ) -> bool {
+        self.is_live_inbox(inbox)
+    }
+
     fn configure_service_tier(&self, tier: Option<pa_types::ai::ServiceTier>) {
         *self.service_tier.write().expect("service tier lock") = tier;
         if let Some(target) = self
@@ -1243,7 +1253,6 @@ impl SessionEngine for AgentSessionEngine {
         let model = self.resolve_model()?;
         self.ensure_core_session(&model)?;
         let (model, api_key) = self.resolve_request_target(model);
-        let global_harness_dir = self.config.agent_dir.clone();
         // The lock covers the clone only; the model call below must not ride it.
         let core = self
             .session
@@ -1256,7 +1265,6 @@ impl SessionEngine for AgentSessionEngine {
                 pa_core::session_engine::refine::RefinementSource::User,
                 model,
                 api_key,
-                global_harness_dir,
             );
             drop(core);
             pending

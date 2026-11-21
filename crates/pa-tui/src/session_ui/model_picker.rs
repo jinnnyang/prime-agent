@@ -4,7 +4,7 @@
 use super::{
     key_event_to_id, streaming_tray_hint, AgentView, ChatEntry, CurrentModel, CycleDirection,
     DaemonCommand, Duration, KeyEvent, Map, ModelPicker, ModelPickerAction, ModelPickerOptions,
-    Result, SessionUi, SetModelOutcome, StatusKind, UI_REQUEST_TIMEOUT_MS,
+    Overlay, Result, SessionUi, SetModelOutcome, StatusKind, UI_REQUEST_TIMEOUT_MS,
 };
 use serde_json::Value;
 
@@ -78,7 +78,7 @@ impl SessionUi {
         // Always open the menu (an empty catalog renders the empty panel).
         let crate::model_picker::ModelCommandOutcome::Open(picker) =
             ModelPicker::open(options, search);
-        view.model_picker = Some(*picker);
+        view.overlay = Some(Overlay::ModelPicker(*picker));
         let force = !search.trim().is_empty();
         if self.model_refresh_due(force) {
             self.spawn_model_catalog_refresh();
@@ -111,10 +111,12 @@ impl SessionUi {
         let Some(id) = key_event_to_id(&key) else {
             return Ok(());
         };
-        let action = view
-            .model_picker
-            .as_mut()
-            .map(|picker| picker.handle_key(&id, view.editor.keybindings()));
+        let action = match view.overlay.as_mut() {
+            Some(Overlay::ModelPicker(picker)) => {
+                Some(picker.handle_key(&id, view.editor.keybindings()))
+            }
+            _ => None,
+        };
         match action {
             Some(ModelPickerAction::None) | None => {}
             Some(ModelPickerAction::ScopeToggled { scoped }) => {
@@ -126,12 +128,12 @@ impl SessionUi {
                 }
             }
             Some(ModelPickerAction::Cancel) => {
-                view.model_picker = None;
+                view.overlay = None;
                 self.picker_restored_draft = false;
                 self.dirty = true;
             }
             Some(ModelPickerAction::Apply(applied)) => {
-                view.model_picker = None;
+                view.overlay = None;
                 // Applying fulfills the command either way, so the editor clears (a Cancel keeps
                 // the partial), except the browse-restore path: the user's restored draft stays.
                 if self.picker_restored_draft {
@@ -245,7 +247,7 @@ impl SessionUi {
         self.model_visibility_note.clone_from(&visibility_note);
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
-        if let Some(picker) = view.model_picker.as_mut() {
+        if let Some(Overlay::ModelPicker(picker)) = view.overlay.as_mut() {
             picker.update_state(
                 current,
                 self.model_catalog.clone(),

@@ -155,8 +155,6 @@ async fn abort_during_a_kernel_cell_settles_the_turn_immediately() {
         tools: Vec::new(),
         custom_system_prompt: None,
         prompt_guidelines: Vec::new(),
-        generic_mcp_servers: Vec::new(),
-        allow_recursion: None,
         session_manager: Some(session),
         extra_host_handlers: None,
         conversation_log_path: None,
@@ -165,6 +163,8 @@ async fn abort_during_a_kernel_cell_settles_the_turn_immediately() {
         extra_builtin_skill_overrides: Vec::new(),
         rlm_subagent_host: None,
         rlm_usage_store: None,
+
+        inbox: None,
         progress_note_emit: None,
         rlm_depth: None,
         factory_child: false,

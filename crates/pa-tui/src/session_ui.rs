@@ -43,7 +43,7 @@ use prompt::PromptOrder;
 pub(crate) use prompt::PromptSubmitNote;
 pub(crate) use prompt::SubmitBehavior;
 use sessions_fork::{create_session, terminal_columns};
-use settings::PendingConfirm;
+pub(crate) use settings::PendingConfirm;
 pub(crate) use settings::ReloadNote;
 pub(crate) use share::{ShareNote, TracesUploadNote, UpdateNote};
 use share::{ShareRun, TraceUploadAllRun, TracesLoginIntent};
@@ -96,7 +96,7 @@ use crate::snapshot::{
 };
 use crate::tree_selector::{TreeSelector, TreeSelectorAction};
 use crate::user_message_selector::{UserMessageSelector, UserMessageSelectorAction};
-use crate::view::{AgentView, ShareLoader};
+use crate::view::{AgentView, Overlay, ShareLoader};
 
 use crossterm::event::KeyEvent;
 use std::time::{Duration, Instant};
@@ -245,6 +245,20 @@ pub(crate) struct SessionUi {
     context: Option<crate::chrome::ContextUsage>,
     list_rows: Vec<Value>,
     pub(crate) turn_active: bool,
+    /// An agent run is in flight (`agent_start` .. `agent_end`): the OSC
+    /// 7501 report stays working across the run's per-step turn
+    /// boundaries.
+    pub(crate) run_open: bool,
+    /// The open run's outcome so far: done, error after a failed step,
+    /// idle after a cancellation.
+    run_outcome: crate::program_status::Status,
+    /// A failed run's outcome, held while its overflow recovery compaction
+    /// runs: that compaction's end decides it.
+    outcome_after_compaction: Option<crate::program_status::Status>,
+    /// The outcome the chat surface reports at rest (the OSC 7501
+    /// done/error input), set at the run's end and cleared at the next
+    /// turn's start, at attach, and when the session closes.
+    pub(crate) settled: Option<crate::program_status::Status>,
     /// Completed turns observed on this connection. A prompt ACK may arrive
     /// after its entire streamed turn; it must not restart the loader then.
     turn_ends_seen: u64,
@@ -266,7 +280,6 @@ pub(crate) struct SessionUi {
     aborted_tools: std::collections::HashSet<String>,
     pub(crate) last_assistant_text: Option<String>,
     pub(crate) osc_sink: crate::clipboard::OscSink,
-    pending_confirm: Option<PendingConfirm>,
     traces: Option<crate::traces::TracesCommandsHandle>,
     provider_auth: Option<crate::provider_auth::ProviderAuthCommandsHandle>,
     /// A model selection parked on the provider's sign-in: the picker applied a model whose
@@ -387,6 +400,9 @@ pub(crate) struct SessionUi {
     /// The attached snapshot's bash slot state, consumed by the next
     /// transcript rebuild: a same-session resync runs the `bashFinished` edge off it.
     resync_bash: Option<ResyncBash>,
+    /// The attached snapshot's `isCompacting`, consumed by the next
+    /// transcript rebuild: a compaction in flight keeps its loader.
+    attach_compacting: Option<bool>,
     /// The LAST HUMAN PROMPT's wall-clock time (unix ms) from the attach snapshot's newest user
     /// message: the rebuilt loader anchors its elapsed clock here (operator ruling 2026-09-28: the
     /// waiting/executing timer never resets on a view transition).
@@ -472,6 +488,17 @@ impl SessionUi {
     /// Take the one-shot post-first-frame trim request.
     pub(crate) fn take_trim_after_frame(&mut self) -> bool {
         std::mem::take(&mut self.trim_after_frame)
+    }
+
+    /// The chat surface's OSC 7501 report: working while a turn or the
+    /// run it belongs to is in flight, including a pending provider retry,
+    /// or while a compaction runs; else the remembered outcome or idle.
+    pub(crate) fn program_status(&self, view: &AgentView) -> crate::program_status::Status {
+        if self.turn_active || self.run_open || view.retry.is_some() || view.compaction.is_some() {
+            crate::program_status::Status::Working
+        } else {
+            self.settled.unwrap_or(crate::program_status::Status::Idle)
+        }
     }
 
     /// Hand the keyboard focus to the dock on its selected group (operator ruling

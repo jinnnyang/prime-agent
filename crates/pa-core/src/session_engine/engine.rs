@@ -34,8 +34,6 @@ pub struct SessionEngineConfig {
     pub custom_system_prompt: Option<String>,
     /// Explicit append-system-prompt sources from the host; overrides file discovery.
     pub prompt_guidelines: Vec<String>,
-    pub generic_mcp_servers: Vec<String>,
-    pub allow_recursion: Option<bool>,
     /// In-memory when None.
     pub session_manager: Option<SessionManager>,
     /// Merged over the built-in goal/heartbeat registrations.
@@ -48,6 +46,10 @@ pub struct SessionEngineConfig {
     pub extra_builtin_skill_overrides: Vec<String>,
     pub rlm_subagent_host: Option<Arc<dyn super::rlm_host::RlmSubagentHost>>,
     pub rlm_usage_store: Option<Arc<dyn super::rlm_usage::RlmChildUsageStore>>,
+    /// The daemon-owned agent inbox whose `rlm.inbox.read`/`rlm.inbox.count`
+    /// host requests register when supplied; daemonless embeddings pass
+    /// `None` and keep their direct notice-row steering.
+    pub inbox: Option<Arc<super::inbox::SessionInbox>>,
     /// Announces every accepted `rlm.progress.note`; `None` keeps the store
     /// the only surface.
     pub progress_note_emit: Option<super::rlm_host::RlmProgressNoteEmit>,
@@ -162,31 +164,12 @@ async fn mcp_gating(
     settings: &crate::settings::SettingsManager,
     agent_dir: std::path::PathBuf,
 ) -> anyhow::Result<(Vec<String>, Vec<String>, crate::mcp::McpManager)> {
-    // MCP execution is user/global only, matching TS getGlobalMcpServers.
-    let user_servers = settings
-        .global_settings()
-        .mcp_servers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(server, config)| {
-            serde_json::from_value(config)
-                .ok()
-                .map(|parsed| (server, parsed))
-        })
-        .collect::<std::collections::HashMap<String, crate::mcp::McpServerConfig>>();
+    let global_settings = settings.global_settings().clone();
     // The MCP manager snapshots auth with a blocking lock; run it off the
     // async runtime.
-    tokio::task::spawn_blocking(move || mcp_gating_blocking(user_servers, &agent_dir))
+    tokio::task::spawn_blocking(move || crate::resources::mcp_gating(&global_settings, &agent_dir))
         .await
         .map_err(|error| anyhow::anyhow!("MCP gating task failed: {error}"))
-}
-
-fn mcp_gating_blocking(
-    user_servers: std::collections::HashMap<String, crate::mcp::McpServerConfig>,
-    agent_dir: &std::path::Path,
-) -> (Vec<String>, Vec<String>, crate::mcp::McpManager) {
-    crate::mcp::McpManager::prompt_gating(user_servers, agent_dir)
 }
 
 /// Assemble a session: load resources, build the system prompt, and start the
@@ -257,11 +240,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             subagent_host: config.rlm_subagent_host.clone(),
             usage_store: config.rlm_usage_store.clone(),
             progress_note_emit: config.progress_note_emit.clone(),
+            inbox: config.inbox.clone(),
         },
         config.queued_goal_context_purge.clone(),
         config.cron_store.clone(),
     );
 
+    // A handle that outlives the move into the resource loader: the
+    // refinement gate and the system prompt read it.
     let refinement_settings = settings.reopen();
     let service_tier_preference = settings.get_default_service_tier();
     // Captured before `settings` moves into the resource loader: the
@@ -281,7 +267,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     let web_search_provider = settings.get_web_search_provider();
-    let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
+    let (mcp_skill_overrides, generic_mcp_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
         .mcp_manager
@@ -289,12 +275,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .unwrap_or_else(|| std::sync::Arc::new(std::sync::Mutex::new(built_manager)));
     let mut extra_builtin_skill_overrides = config.extra_builtin_skill_overrides.clone();
     extra_builtin_skill_overrides.extend(mcp_skill_overrides);
-    let mut generic_mcp_servers = config.generic_mcp_servers.clone();
-    for server in mcp_generic_servers {
-        if !generic_mcp_servers.contains(&server) {
-            generic_mcp_servers.push(server);
-        }
-    }
     let resources = load_resources(ResourceLoaderOptions {
         cwd: cwd.clone(),
         agent_dir: config.agent_dir.clone(),
@@ -309,6 +289,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         append_system_prompt: config.prompt_guidelines.clone(),
         ..Default::default()
     })?;
+
+    let skill_problems: Vec<crate::resources::SkillStatus> = resources
+        .skill_statuses
+        .iter()
+        .filter(|status| status.state.is_problem())
+        .cloned()
+        .collect();
 
     let model = config
         .model
@@ -565,10 +552,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         });
     }
 
-    let prompt_model_selector = format!("{}/{}", model_info.provider, model_info.id);
-    let prompt_vision_capable = Some(model_info.input.contains(&pa_types::ai::ModelInput::Image));
     let model_prompts = crate::prompts::model_prompts::load_model_prompts(
-        Some(&prompt_model_selector),
+        Some(&format!("{}/{}", model_info.provider, model_info.id)),
         &config.agent_dir,
     );
     if !model_prompts.errors.is_empty() {
@@ -581,33 +566,21 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     }
     let system_prompt = crate::prompts::system_prompt::build_system_prompt(
         &crate::prompts::system_prompt::BuildSystemPromptOptions {
-            custom_prompt: resources.system_prompt.clone(),
+            settings: &refinement_settings,
+            resources: &resources,
+            skills: &model_visible_skills,
+            selected_tools: active_tool_names.iter().map(String::as_str).collect(),
             model_prompt_extras: model_prompts.extras.as_deref(),
-            vision_capable: prompt_vision_capable,
+            model_input: &model_info.input,
             cwd: cwd.display().to_string(),
             messages_path: conversation_log.clone(),
-            context_files: resources
-                .agents_files
-                .iter()
-                .map(|file| (file.path.display().to_string(), file.content.clone()))
-                .collect(),
-            skills: model_visible_skills.clone(),
-            selected_tools: Some(
-                active_tool_names
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-            ),
-            allow_recursion: config.allow_recursion,
+            generic_mcp_servers,
             // A spawned child's prompt must read "depth: N (not root)" with
             // the child-agent reply doctrine, never the root identity.
-            rlm_depth: config.rlm_depth,
+            rlm_depth: config.rlm_depth.unwrap_or(0),
             factory_child: config.factory_child,
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
-            generic_mcp_servers,
-            append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
-            ..Default::default()
         },
     );
 
@@ -643,6 +616,29 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let has_service_tier_entry = session.has_service_tier();
         (messages, has_thinking_entry, has_service_tier_entry)
     };
+    // Skill problems report once, when a root session starts fresh: a
+    // revived session or a child of the same cwd would repeat them.
+    if !skill_problems.is_empty()
+        && existing_messages.is_empty()
+        && config.rlm_depth.unwrap_or(0) == 0
+    {
+        // No tracing subscriber is installed; the daemon's per-worker log
+        // captures stderr.
+        for problem in &skill_problems {
+            eprintln!(
+                "Warning: skill {} ({}): {}",
+                problem.name,
+                problem.path,
+                problem.describe()
+            );
+        }
+        boot_notice_rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(super::skill_problems_notice::notice_message(
+                &skill_problems,
+            ));
+    }
     let thinking_level = config.thinking_level.unwrap_or(ThinkingLevel::Off);
     {
         let mut session = wiring.session.lock().await;

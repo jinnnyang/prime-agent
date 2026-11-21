@@ -55,6 +55,12 @@ impl AgentView {
                     spacing,
                 )
             }
+            ChatEntry::InboxNotice(row) => crate::custom_message::geometry::inbox_notice_row_count(
+                row,
+                &self.theme,
+                width,
+                spacing,
+            ),
             ChatEntry::ShellCompletion(row) => {
                 crate::custom_message::geometry::shell_completion_row_count(
                     row, detail, width, spacing,
@@ -250,6 +256,13 @@ mod tests {
             markdown_text().prop_map(|message| serde_json::json!({"sentAgentMessages": [
                 {"message": message, "deliveryStatus": "delivered", "receiverRole": "parent"},
                 {"id": "invalid"}]})),
+            markdown_text().prop_map(|text| serde_json::json!({"inboxMessages": [
+                {"class": "agent-message", "text": text, "meta": {"id": "m", "from": {}}},
+                {"class": "child-failed", "text": text, "meta": {}},
+                {"class": "bash-done", "text": text,
+                    "meta": {"pid": 3, "command": "ls", "exitCode": 1}},
+                {"class": "heartbeat", "text": text, "meta": {}},
+                {"class": "factory-progress", "text": text, "meta": {}}]})),
         ];
         let image = prop::option::of(prop::sample::select(vec![
             serde_json::json!({"type": "image"}),
@@ -338,6 +351,18 @@ mod tests {
                     message,
                 }))
             }),
+            1 => (
+                prop::sample::select(vec!["arrival", "reminder"]),
+                prop::option::of(any::<u64>()),
+                markdown_text()
+            )
+                .prop_map(|(class, count, text)| {
+                    ChatEntry::InboxNotice(Box::new(InboxNoticeRow {
+                        class: class.to_string(),
+                        count,
+                        text,
+                    }))
+                }),
             1 => markdown_text().prop_map(|content| {
                 ChatEntry::SkillInvocation(Box::new(SkillInvocationRow {
                     name: "skill 数据".to_string(),

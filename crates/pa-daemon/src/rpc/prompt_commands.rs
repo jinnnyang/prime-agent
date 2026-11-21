@@ -142,7 +142,6 @@ async fn run_session_command(
         let mut params = SessionCommandParams {
             model: &model,
             api_key: api_key.clone(),
-            global_harness_dir: state.agent_dir.clone(),
             autonomous: &mut autonomous,
         };
         // The executor never errors out of the call: failures ride
@@ -217,11 +216,18 @@ async fn run_session_command(
         return Err(error.clone());
     }
     if let Some(continuation) = execution.continuation_message {
+        // The continuation is an internal wake: steer a busy session (the
+        // delivery queues into the running turn), never reject it.
         engine
             .session
-            .prompt_injected_message(&continuation)
+            .prompt_injected_message_with_behavior(
+                &continuation,
+                pa_core::session_engine::StreamingBehavior::Steer,
+            )
             .await
             .map_err(|error| format!("{error:#}"))?;
+        // A continuation queued behind a running turn is the queue pump's to
+        // deliver: `prompt` kicks it once this command settles.
         engine.session.agent().wait_for_idle().await;
     }
     Ok(())
