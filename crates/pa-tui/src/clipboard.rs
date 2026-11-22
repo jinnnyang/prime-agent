@@ -366,6 +366,9 @@ fn tmux_clipboard_blocked(carriable: bool, blocks: impl FnOnce() -> bool) -> Opt
 }
 
 fn copy_with_env(text: &str, sink: &mut OscSink, env: &Env) -> Result<CopyOutcome, String> {
+    // A leading BOM is never copy content: clip.exe keeps it as a real
+    // character, so pasting into PowerShell fails (#93).
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     let remote = is_remote_session(env);
     // The cap gate is a length check, not the encoding: the local
     // helpers below take the raw payload, and only an OSC 52 write
@@ -433,6 +436,26 @@ mod tests {
         let result = copy_with_env(&big, &mut sink, &plain_env());
         assert_eq!(result, Err("Failed to copy to clipboard".to_string()));
         assert!(matches!(sink, OscSink::Buffer(buffer) if buffer.is_empty()));
+    }
+
+    #[test]
+    fn a_leading_bom_never_reaches_the_clipboard() {
+        use base64::Engine;
+        let mut sink = OscSink::Buffer(Vec::new());
+        let result = copy_with_env("\u{FEFF}dir", &mut sink, &plain_env());
+        assert_eq!(result, Ok(CopyOutcome::Requested));
+        let OscSink::Buffer(bytes) = sink else {
+            panic!("the buffer sink stays a buffer");
+        };
+        let sequence = String::from_utf8(bytes).expect("an OSC 52 sequence is ASCII");
+        let encoded = sequence
+            .strip_prefix("\x1b]52;c;")
+            .and_then(|rest| rest.strip_suffix('\x07'))
+            .expect("the OSC 52 frame wraps the payload");
+        let copied = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("the payload is base64");
+        assert_eq!(copied, b"dir");
     }
 
     #[test]
