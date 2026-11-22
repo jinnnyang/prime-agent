@@ -1,0 +1,1 @@
+- Pinned the repository to LF line endings via `.gitattributes`, keeping Windows checkouts and diffs free of CRLF churn.
