@@ -47,6 +47,7 @@ Development rules for Prime Agent (Rust) on PrimeIntellect-ai/prime-agent, branc
 - If a change starts forcing edits across many crate internals, stop and fix the boundary instead.
 - Do not commit scripts or tools that no workflow, Makefile target, or other code runs (one-off review, parity, or reproduction scripts). Put their results in the PR body as a one-off run with its command and result, not as coverage.
 - Do not commit evidence logs, reports, generated outputs, or local venvs and caches that no code or test reads.
+- Line endings are pinned by `.gitattributes` (`* text=auto eol=lf`): the repo is LF. Script text reads/writes with `newline=""`, confirm with `git ls-files --eol` (`i/lf w/lf`) before committing; a system `core.autocrlf=true` can hide whole-file CRLF rewrites in `git diff`.
 
 ## Tests
 

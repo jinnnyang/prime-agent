@@ -1,0 +1,8 @@
+# Prime Agent pins LF for the whole tree (issue #98).
+# text=auto keeps git's binary detection (one .rs file carries NUL bytes);
+# eol=lf makes every checkout write LF regardless of core.autocrlf.
+* text=auto eol=lf
+
+# Known binary payloads: never normalize or diff them.
+*.wasm binary
+scripts/release/testdata/bin/** binary
