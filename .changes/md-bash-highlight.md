@@ -1,1 +1,0 @@
-- Added syntax highlighting for `bash`, `sh`, `shell`, and `zsh` code blocks in chat Markdown.

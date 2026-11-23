@@ -1,1 +1,0 @@
-- Fixed copied TUI text starting with an invisible byte-order mark, which made pasting a command into PowerShell or cmd fail.

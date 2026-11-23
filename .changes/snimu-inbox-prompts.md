@@ -1,1 +1,0 @@
-- The system prompt now tells agents in agent-inbox sessions that machine notices wait in the inbox and how to read them, and documents `rlm.inbox.read`/`rlm.inbox.count`; inbox notices now read `Read them with msgs = await rlm.inbox.read().`; skills, factory help, the bash snapshot hint, and the pa-daemon README describe the inbox.

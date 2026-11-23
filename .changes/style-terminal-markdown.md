@@ -1,1 +1,0 @@
-- Made inline code easier to spot in the default terminal theme and preserved Markdown emphasis in your prompts.

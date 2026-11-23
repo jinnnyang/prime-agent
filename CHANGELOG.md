@@ -2,6 +2,38 @@
 
 Release notes for Prime Agent. Historical TypeScript release notes are recorded in the [TypeScript changelog](https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.8/packages/coding-agent/CHANGELOG.md).
 
+## [0.12.0] - 2026-11-23
+
+- The rolling `nightly` release now shows what the beta build contains (the pending changelog bullets) and how to install it (`install-beta.sh` / `install-beta.ps1`, `prime-agent update --nightly`), instead of a fixed four-line notice.
+- Made inline code easier to spot in the default terminal theme and preserved Markdown emphasis in your prompts.
+- When the live model catalog is unavailable, DeepSeek V4 Flash 0731 on Prime Inference now offers the low and max reasoning levels its route accepts, and uses its real context window, output limit, and cache-read price.
+- The agents view (`prime-agent agents`) can search saved sessions' message text: press Ctrl+F in the search bar to switch between titles and messages; the message search covers top-level session files only, so subagent transcripts are not searched yet.
+- Fixed queued steering and follow-up messages (such as `[bash-done]` rows) being lost when a queued delivery raced another run starting.
+- Fixed OpenAI-compatible providers streaming the start of a reply before the end of the model's thinking when both arrived in one chunk; thinking now always streams and saves before the reply text.
+- Fixed a goal status change made during a turn (for example `/goal pause`) sometimes not reaching clients until a later turn: the turn end now always publishes it.
+- Accepting a slash-command argument suggestion (e.g. `/tier de ` → `default`) now replaces the typed argument instead of appending to it (`/tier de default`).
+feat: agent inboxes — machine notices (bash completions, factory milestones, child lifecycle terminals, heartbeat fires) and delivered agent messages accumulate in a durable per-session inbox; a short coalesced count notice (one row per burst, "3 new bash-done messages") and a minimal count-only periodic reminder announce them (the reminder never fires while `reminderIntervalMs: 0` or `agentInbox.enabled: false` is set); a bash handle collected through its result clears its own message; a journal write failure names its memory-only degradation in the notice; the journal replays complete records across a torn write and keeps message ids monotonic across restarts; the agent reads with `rlm.inbox.read()`/`rlm.inbox.count()`, narrowing a read by sender, class, or arrival window and draining only the matches
+- inbox notifications now render in the transcript as their own attributed row (the inbox system's envelope line with the notice text always visible beneath it) instead of typed user messages, and a queued inbox notice folds into the queue strip's internal-prompt count instead of a browsable steering preview, so the daemon's machine notices never look like the operator's input
+- The inbox read keeps working with a strict filter: an unknown filter field is now a request error instead of a silently empty filter that drains the whole inbox. The read handler also keeps the request envelope's routing key out of the filter.
+- Fixed a collected bash notice stranding a restored unread message's inbox notice after a restart.
+- The prompt highlights `@` file references exactly as `@` completion reads them: an unclosed `@"...` stays highlighted to the end of the line, and an `@path` right after `=` (`--file=@src/main.rs`) highlights too.
+- `@` file references now accept single quotes (`@'my file.txt'`) like double quotes, and on macOS/Linux backslash-escaped spaces (`@my\ file.txt`); completion keeps the quoting you typed.
+- Fixed Stop pressed right after you send a prompt marking an active goal as failed.
+- Fixed an RLM child losing its final answer when its worker crashed right after the answer: `rlm.list_subagents` and the parent's completion notice now show the answer.
+- New `attach_video(*paths)` skill: loads short MP4/WebM clips (up to 7.5 MB each, prime-agent's attachment limit) into context. OpenAI-compatible chat-completions providers receive them as `video_url` parts when the model declares `"video"` input in `models.json`; other providers and models see a placeholder.
+- A `--model` or model selection the catalog cannot match exactly now shows a warning (stderr in print mode, a warning row in the chat) instead of silently running on a made-up custom model id.
+- A session whose turn crashed or was dropped mid-run no longer stays busy for good (every later message used to fail with "Agent is already processing").
+- A heartbeat keeps at most one waiting message in the agent inbox: a newer fire replaces the older one, and a fire that lands after its heartbeat was paused, stopped, deleted, or rewritten no longer leaves a stale prompt behind.
+- Added syntax highlighting for `bash`, `sh`, `shell`, and `zsh` code blocks in chat Markdown.
+- Agent messages routed to the inbox are no longer refused with "too many pending messages" when the recipient has many unread messages.
+- `prime-agent prompt` now prints the prompt a fresh daemon root session gets: it includes a discovered `APPEND_SYSTEM.md` and the image-input line, and it resolves `--model` like the CLI flag (fuzzy selectors preview the resolved model's additions, an unknown model is an error). Without `--model`, it uses the session's default model.
+- ACP mode supports the steering extension (`_session/steering`, advertised in the `initialize` `_meta`): a client can add a message to the running prompt turn, and steering without a running turn answers `promptRequired` without starting one.
+- Pausing agent messages no longer deletes inbox messages, clearing them removes only messages the agent has not been told about yet, a message to a closing session is refused instead of being silently stranded, and clearing the queue keeps the inbox notice for mail that has not been announced.
+- The system prompt now tells agents in agent-inbox sessions that machine notices wait in the inbox and how to read them, and documents `rlm.inbox.read`/`rlm.inbox.count`; inbox notices now read `Read them with msgs = await rlm.inbox.read().`; skills, factory help, the bash snapshot hint, and the pa-daemon README describe the inbox.
+- The python_repl card now shows each message `rlm.inbox.read()` returned, rendered like the row it replaced. The inbox notice header now reads "Agent inbox · 3 new messages" or "3 unread messages".
+- Fixed copied TUI text starting with an invisible byte-order mark, which made pasting a command into PowerShell or cmd fail.
+- Pinned the repository to LF line endings via `.gitattributes`, keeping Windows checkouts and diffs free of CRLF churn.
+
 ## [0.10.5] - 2026-11-18
 
 - Daemon, print/JSON (`prime-agent -p`), and RPC stdio-mode refinements now write the harness stores the session's digest reads: the global store under the agent dir's `harness/` path and the local store in the session's own artifact directory, instead of the orphan `~/.prime/agent/harness_state.json` and `~/.prime/agent/refinement_history.jsonl` (written by daemon and RPC `/refine --global`), one shared `~/.prime/agent/sessions/harness/harness_state.json` (written by every session whose session dir is the sessions root), and `<session dir>/harness/harness_state.json` under any custom session dir (`--session-dir`, `PRIME_AGENT_SESSION_DIR`, or the `sessionDir` setting). The old files stay on disk but nothing reads them anymore. No automatic migration ships: entries in the orphaned global file can be merged by hand into `~/.prime/agent/harness/harness_state.json`; the shared local files mix sessions and cannot be attributed back.
