@@ -1,1 +1,0 @@
-- Agent messages routed to the inbox are no longer refused with "too many pending messages" when the recipient has many unread messages.

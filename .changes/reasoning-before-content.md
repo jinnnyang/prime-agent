@@ -1,1 +1,0 @@
-- Fixed OpenAI-compatible providers streaming the start of a reply before the end of the model's thinking when both arrived in one chunk; thinking now always streams and saves before the reply text.
