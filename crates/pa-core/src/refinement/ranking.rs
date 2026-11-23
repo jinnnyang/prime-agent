@@ -437,7 +437,7 @@ pub fn page_index_fingerprint(
             .unwrap_or(u64::MAX)
             .to_le_bytes(),
     );
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn scope_name(entry: &HarnessEntry) -> &'static str {

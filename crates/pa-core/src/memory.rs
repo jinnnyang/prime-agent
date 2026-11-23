@@ -650,7 +650,7 @@ fn fingerprint(pages: &[MemoryPage]) -> String {
         }
         hasher.update(b"edges-end\0");
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

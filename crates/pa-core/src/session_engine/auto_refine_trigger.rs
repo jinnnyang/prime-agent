@@ -326,6 +326,9 @@ mod tests {
         // review and refine paths find their stores exactly as a
         // production session does.
         let harness_digest = super::super::harness_digest::HarnessDigestContext {
+            dream_hint: super::super::harness_digest::DreamHint::Silent,
+            agent_dir: None,
+            entries_per_kind: crate::refinement::digest_entries_per_kind(None),
             global_dir: tmp.path().join("harness"),
             local_dir: crate::refinement::get_local_harness_state_dir(
                 manager.get_session_artifact_dir().as_deref(),

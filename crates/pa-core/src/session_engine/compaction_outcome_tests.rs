@@ -407,6 +407,9 @@ async fn refine_test_session_with(
         Arc::new(tokio::sync::Mutex::new(manager)),
         vec![],
         Some(super::harness_digest::HarnessDigestContext {
+            dream_hint: super::harness_digest::DreamHint::Silent,
+            agent_dir: None,
+            entries_per_kind: crate::refinement::digest_entries_per_kind(None),
             global_dir: tmp.path().join("harness"),
             local_dir: local_harness_dir,
             include_ipython: false,
@@ -453,6 +456,9 @@ async fn daemon_shaped_local_refinement_writes_the_sessions_own_harness_store() 
     // store under the agent dir's harness path, the local store the
     // conversation log implies.
     let harness_digest = super::harness_digest::HarnessDigestContext {
+        dream_hint: super::harness_digest::DreamHint::Silent,
+        agent_dir: Some(agent_dir.clone()),
+        entries_per_kind: crate::refinement::digest_entries_per_kind(None),
         global_dir: crate::refinement::get_global_harness_state_dir(&agent_dir),
         local_dir: super::harness_digest::local_harness_dir_for_log(&conversation_log),
         include_ipython: false,
