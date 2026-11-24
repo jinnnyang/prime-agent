@@ -2,6 +2,10 @@
 
 Release notes for Prime Agent. Historical TypeScript release notes are recorded in the [TypeScript changelog](https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.8/packages/coding-agent/CHANGELOG.md).
 
+## [0.12.1] - 2026-11-24
+
+- Fixed copied TUI text still gaining an invisible byte-order mark when several were queued in front of the selection: every leading U+FEFF is now stripped, not just the first.
+
 ## [0.12.0] - 2026-11-23
 
 - The rolling `nightly` release now shows what the beta build contains (the pending changelog bullets) and how to install it (`install-beta.sh` / `install-beta.ps1`, `prime-agent update --nightly`), instead of a fixed four-line notice.
