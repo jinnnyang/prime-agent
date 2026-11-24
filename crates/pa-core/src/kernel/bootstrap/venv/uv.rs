@@ -2,6 +2,7 @@
 
 use super::{anyhow, home_dir, Path, PathBuf};
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 
 #[cfg(windows)]
 const UV_INSTALL_COMMAND: &str =
@@ -9,7 +10,14 @@ const UV_INSTALL_COMMAND: &str =
 #[cfg(not(windows))]
 const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 
-fn find_executable(name: &str, path_value: &OsStr, project: Option<&Path>) -> Option<PathBuf> {
+/// Search `path_value` for `name`, recording every directory the safety filter let
+/// through into `searched` so a failed lookup can report where it actually looked.
+fn find_executable(
+    name: &str,
+    path_value: &OsStr,
+    project: Option<&Path>,
+    searched: &mut Vec<PathBuf>,
+) -> Option<PathBuf> {
     // The bare name on Unix; PATHEXT extension candidates on Windows
     // (TS `findExecutable` -> `windowsExecutableCandidates`).
     #[cfg(windows)]
@@ -23,6 +31,7 @@ fn find_executable(name: &str, path_value: &OsStr, project: Option<&Path>) -> Op
         if !crate::kernel::python_env::safe_executable_path(&dir, project) {
             continue;
         }
+        searched.push(dir.clone());
         for candidate in &candidates {
             let full_path = dir.join(candidate);
             if crate::kernel::python_env::safe_executable_path(&full_path, project)
@@ -87,23 +96,64 @@ fn is_executable(path: &Path) -> bool {
 
 /// Find `uv` on PATH or at `~/.local/bin/uv` (`uv.exe` on Windows). Returns `Err` with install
 /// guidance when missing: the Rust binary never auto-installs.
+///
+/// The lookup runs against the calling process's environment, which is a snapshot taken at
+/// process start: a `uv` installed while Prime Agent is running sits on a PATH entry this
+/// process never saw. The `~/.local/bin` probe is the fallback for exactly that case, and the
+/// error names every location the resolver tried so the miss is diagnosable without a debugger.
 pub(crate) fn ensure_uv(project: Option<&Path>) -> anyhow::Result<String> {
-    if let Some(from_path) =
-        std::env::var_os("PATH").and_then(|path| find_executable("uv", &path, project))
+    let home = home_dir();
+    resolve_uv(project, std::env::var_os("PATH").as_deref(), Some(&home))
+}
+
+/// [`ensure_uv`] over an explicit environment view (PATH and home), so the resolution order and
+/// the failure message are testable without mutating the process environment.
+fn resolve_uv(
+    project: Option<&Path>,
+    path_value: Option<&OsStr>,
+    home: Option<&Path>,
+) -> anyhow::Result<String> {
+    let mut searched = Vec::new();
+    if let Some(found) =
+        path_value.and_then(|path| find_executable("uv", path, project, &mut searched))
     {
-        return Ok(from_path.to_string_lossy().to_string());
+        return Ok(found.to_string_lossy().to_string());
     }
     let uv_name = if cfg!(windows) { "uv.exe" } else { "uv" };
-    let local_uv = home_dir().join(".local").join("bin").join(uv_name);
-    if (crate::kernel::python_env::safe_executable_path(&local_uv, project)
-        || crate::kernel::python_env::safe_home_uv(&local_uv, project))
-        && is_executable(&local_uv)
-    {
-        return Ok(local_uv.to_string_lossy().to_string());
+    let local_uv = home.map(|home| home.join(".local").join("bin").join(uv_name));
+    if let Some(local_uv) = local_uv {
+        if (crate::kernel::python_env::safe_executable_path(&local_uv, project)
+            || crate::kernel::python_env::safe_home_uv(&local_uv, project))
+            && is_executable(&local_uv)
+        {
+            return Ok(local_uv.to_string_lossy().to_string());
+        }
+        searched.push(local_uv);
     }
-    Err(anyhow!(
+    Err(missing_uv_error(&searched))
+}
+
+/// The missing-uv error: the install command, the locations the resolver actually examined, and
+/// the one action that clears a stale-PATH miss (restart, which re-reads the environment).
+fn missing_uv_error(searched: &[PathBuf]) -> anyhow::Error {
+    let mut message = format!(
         "uv is required to set up the Python kernel. Install uv yourself: {UV_INSTALL_COMMAND}"
-    ))
+    );
+    if searched.is_empty() {
+        message.push_str(
+            "\nNo location was searched: PATH is unset, or every entry was rejected as unsafe to run from.",
+        );
+    } else {
+        let locations: Vec<String> = searched
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        let _ = write!(message, "\nLooked for uv in: {}", locations.join(", "));
+    }
+    message.push_str(
+        "\nA uv installed after Prime Agent started is missing from this process's PATH snapshot; restart Prime Agent to pick it up.",
+    );
+    anyhow!(message)
 }
 
 #[cfg(all(test, unix))]
@@ -129,7 +179,7 @@ mod safe_uv_tests {
         symlink(project.join("uv"), alias.join("uv")).unwrap();
         let path = std::env::join_paths([Path::new("."), &project, &alias, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&project)),
+            find_executable("uv", &path, Some(&project), &mut Vec::new()),
             Some(trusted.join("uv"))
         );
 
@@ -138,7 +188,7 @@ mod safe_uv_tests {
         std::fs::set_permissions(&ancestor_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = std::env::join_paths([root.path()]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&project)),
+            find_executable("uv", &path, Some(&project), &mut Vec::new()),
             Some(ancestor_uv)
         );
     }
@@ -161,7 +211,7 @@ mod safe_uv_tests {
         }
         let path = std::env::join_paths([&sibling, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&project)),
+            find_executable("uv", &path, Some(&project), &mut Vec::new()),
             Some(trusted.join("uv"))
         );
     }
@@ -185,7 +235,7 @@ mod safe_uv_tests {
         }
         let path = std::env::join_paths([&outer_tools, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&inner)),
+            find_executable("uv", &path, Some(&inner), &mut Vec::new()),
             Some(trusted.join("uv"))
         );
     }
@@ -204,7 +254,7 @@ mod safe_uv_tests {
         std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = std::env::join_paths([Path::new("."), &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(filesystem_root)),
+            find_executable("uv", &path, Some(filesystem_root), &mut Vec::new()),
             Some(uv)
         );
     }
@@ -213,6 +263,34 @@ mod safe_uv_tests {
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn a_missing_uv_names_every_location_it_searched() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let home = root.path().join("home");
+        let tools = root.path().join("tools");
+        let home_bin = home.join(".local").join("bin");
+        for dir in [&project, &tools, &home_bin] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let path = std::env::join_paths([&tools]).unwrap();
+        let error = resolve_uv(Some(&project), Some(&path), Some(&home)).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains(&tools.display().to_string()),
+            "PATH directory missing from: {message}"
+        );
+        assert!(
+            message.contains(
+                &home_bin
+                    .join(if cfg!(windows) { "uv.exe" } else { "uv" })
+                    .display()
+                    .to_string()
+            ),
+            "home probe missing from: {message}"
+        );
+    }
 
     #[test]
     fn uv_search_applies_the_vanished_project_rule() {
@@ -235,7 +313,7 @@ mod search_tests {
         }
         let path = std::env::join_paths([&sibling, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&vanished)),
+            find_executable("uv", &path, Some(&vanished), &mut Vec::new()),
             Some(trusted.join(uv_name))
         );
     }
