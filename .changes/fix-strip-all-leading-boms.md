@@ -1,1 +1,0 @@
-- Fixed copied TUI text still gaining an invisible byte-order mark when several were queued in front of the selection: every leading U+FEFF is now stripped, not just the first.
