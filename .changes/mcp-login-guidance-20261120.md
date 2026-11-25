@@ -1,1 +1,0 @@
-- MCP connection guidance now directs users to open `/mcp` and select a service in the connections view.

@@ -1,1 +1,0 @@
-- A bash() call with an invented keyword argument gets a teaching decline, and an interrupt can no longer tear a protocol frame.

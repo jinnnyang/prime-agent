@@ -1,1 +1,0 @@
-- A run of inbox notices in the transcript now shows as one dim counter line; Ctrl+O or a click expands it.
