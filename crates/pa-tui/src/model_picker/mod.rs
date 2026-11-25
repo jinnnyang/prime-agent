@@ -689,8 +689,6 @@ impl ModelPicker {
     }
 
     pub(crate) fn effort_layout(&self, start: usize, end: usize) -> EffortLayout {
-        /// Wide detail columns must fit "Cached input".
-        const EFFORT_NAME_COLUMN_MAX: usize = 30;
         const EFFORT_NAME_COLUMN_MIN: usize = 12;
         const ARROWS_AND_GAPS: usize = 6;
 
@@ -735,8 +733,7 @@ impl ModelPicker {
             .iter()
             .map(|model| crate::width::str_width(&model.name))
             .max()
-            .unwrap_or(0)
-            .min(EFFORT_NAME_COLUMN_MAX);
+            .unwrap_or(0);
         let square_slots = reasoning
             .iter()
             .map(|model| {
