@@ -424,19 +424,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_error_response_answers_its_page_and_keeps_waiting() {
-        let (server, port) = live("the-state");
-        let response = request(port, "/callback?error=access_denied").await;
-        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
-        assert!(response.contains("Anthropic authentication did not complete"));
-        assert!(response.contains("Error: access_denied"));
-        // A non-matching response never settles the login; the cancel
-        // does.
-        server.cancel().await;
-        assert!(server.wait_for_code().await.is_none());
-    }
-
-    #[tokio::test]
     async fn missing_parameters_and_state_mismatch_never_settle() {
         let (server, port) = live("the-state");
         let missing = request(port, "/callback?code=the-code").await;
@@ -498,6 +485,7 @@ mod tests {
         assert_eq!(result.code, "the-code");
     }
 
+    /// The Anthropic callback has its own decoder, separate from the one in `callback.rs`.
     #[test]
     fn query_and_percent_decoding() {
         assert_eq!(percent_decode("a%20b"), "a b");

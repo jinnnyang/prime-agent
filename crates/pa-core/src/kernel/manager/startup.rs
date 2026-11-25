@@ -238,11 +238,6 @@ impl Inner {
         };
         let pid = child.id().map_or(-1, |p| p as i32);
         orphan_journal::record_orphan_process_state(pid, true);
-        if let Some(child_pid) = child.id() {
-            // The store reclamation skips any store a live kernel runs from;
-            // the marker write is best effort and only delays reclamation.
-            crate::kernel::bootstrap::mark_kernel_running(&python, child_pid);
-        }
         let (ready_tx, ready_rx) = oneshot::channel::<anyhow::Result<i64>>();
         if let Some(starting) = lock(&self.guarded).lifecycle.starting_mut() {
             starting.ready_tx = Some(ready_tx);

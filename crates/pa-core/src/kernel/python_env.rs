@@ -102,6 +102,24 @@ fn reaches_boundary(
     }
 }
 
+/// The account's home from the user database, independent of `HOME`.
+#[cfg(unix)]
+pub(crate) fn account_home() -> Option<PathBuf> {
+    nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|user| user.dir)
+}
+
+/// No dependency exposes the profile known folder, so Windows takes
+/// `USERPROFILE`.
+#[cfg(not(unix))]
+pub(crate) fn account_home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .filter(|profile| !profile.is_empty())
+        .map(PathBuf::from)
+}
+
 /// The global uv install at `$HOME/.local/bin` is trusted only when no Git
 /// checkout encloses the project. Without a project, the pinned path alone
 /// decides. Otherwise the nearest checkout of the project, existing or
