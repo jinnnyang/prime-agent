@@ -102,10 +102,6 @@ fn reaches_boundary(
     }
 }
 
-/// The global uv install at `$HOME/.local/bin` is trusted only when no Git
-/// checkout encloses the project. Without a project, the pinned path alone
-/// decides. Otherwise the nearest checkout of the project, existing or
-/// vanished, must not contain the uv path.
 /// The account's home from the user database, independent of `HOME`.
 #[cfg(unix)]
 pub(crate) fn account_home() -> Option<PathBuf> {
@@ -124,6 +120,10 @@ pub(crate) fn account_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The global uv install at `$HOME/.local/bin` is trusted only when no Git
+/// checkout encloses the project. Without a project, the pinned path alone
+/// decides. Otherwise the nearest checkout of the project, existing or
+/// vanished, must not contain the uv path.
 pub(crate) fn safe_home_uv(path: &Path, project: Option<&Path>) -> bool {
     safe_home_uv_with_home(path, project, pa_types::platform::home_dir().as_deref())
 }
