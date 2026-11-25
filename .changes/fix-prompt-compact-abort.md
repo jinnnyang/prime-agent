@@ -1,1 +1,0 @@
-- Fixed `/compact` sent as a prompt ignoring `abort_compaction`: the compaction now stops and commits no summary.

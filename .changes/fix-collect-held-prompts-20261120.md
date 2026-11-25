@@ -1,1 +1,0 @@
-- Fixed blocking child collection so selected child tasks start without waiting for the parent turn to end.

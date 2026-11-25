@@ -1,1 +1,0 @@
-- Python runtime: the kernel owns its SIGINT mask at startup.
