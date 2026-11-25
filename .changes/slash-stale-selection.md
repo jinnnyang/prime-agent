@@ -1,1 +1,0 @@
-- Enter after fast typing now runs the slash command you typed. Before, it could run a menu row picked for an earlier part of the text, such as `/settings` for `/login`.

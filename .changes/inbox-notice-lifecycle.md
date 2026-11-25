@@ -1,1 +1,0 @@
-- Reading a finished `bash()` result from any cell or task while a cell runs now drops its `[bash-done]` notice instead of waking the agent later; a read with no live cell keeps it.
