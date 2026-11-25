@@ -2,6 +2,7 @@
 
 use super::{anyhow, home_dir, Path, PathBuf};
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 
 #[cfg(windows)]
 const UV_INSTALL_COMMAND: &str =
@@ -9,7 +10,23 @@ const UV_INSTALL_COMMAND: &str =
 #[cfg(not(windows))]
 const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 
-fn find_executable(name: &str, path_value: &OsStr, project: Option<&Path>) -> Option<PathBuf> {
+/// What a lookup examined: the directories the safety filter admitted, and how many PATH entries
+/// it refused to run from. A miss reports both, so "uv is not installed" and "uv sits somewhere
+/// this process will not execute from" read differently.
+#[derive(Default)]
+struct UvSearch {
+    searched: Vec<PathBuf>,
+    skipped: usize,
+}
+
+/// Search `path_value` for `name`, recording every directory the safety filter let through into
+/// `search` so a failed lookup can report where it actually looked.
+fn find_executable(
+    name: &str,
+    path_value: &OsStr,
+    project: Option<&Path>,
+    search: &mut UvSearch,
+) -> Option<PathBuf> {
     // The bare name on Unix; PATHEXT extension candidates on Windows
     // (TS `findExecutable` -> `windowsExecutableCandidates`).
     #[cfg(windows)]
@@ -21,8 +38,10 @@ fn find_executable(name: &str, path_value: &OsStr, project: Option<&Path>) -> Op
         // checked-in executable before any user action. An ancestor is safe
         // when the selected binary itself stays outside the project.
         if !crate::kernel::python_env::safe_executable_path(&dir, project) {
+            search.skipped += 1;
             continue;
         }
+        search.searched.push(dir.clone());
         for candidate in &candidates {
             let full_path = dir.join(candidate);
             if crate::kernel::python_env::safe_executable_path(&full_path, project)
@@ -87,23 +106,71 @@ fn is_executable(path: &Path) -> bool {
 
 /// Find `uv` on PATH or at `~/.local/bin/uv` (`uv.exe` on Windows). Returns `Err` with install
 /// guidance when missing: the Rust binary never auto-installs.
+///
+/// The lookup runs against the calling process's environment, which is a snapshot taken at
+/// process start: a `uv` installed while Prime Agent is running sits on a PATH entry this
+/// process never saw. The `~/.local/bin` probe is the fallback for exactly that case, and the
+/// error names every location the resolver tried so the miss is diagnosable without a debugger.
 pub(crate) fn ensure_uv(project: Option<&Path>) -> anyhow::Result<String> {
-    if let Some(from_path) =
-        std::env::var_os("PATH").and_then(|path| find_executable("uv", &path, project))
+    resolve_uv(
+        project,
+        std::env::var_os("PATH").as_deref(),
+        &home_dir().join(".local").join("bin"),
+    )
+}
+
+/// [`ensure_uv`] over an explicit environment view (PATH and the tool directory), so the search
+/// order and the failure message are testable without mutating the process environment.
+fn resolve_uv(
+    project: Option<&Path>,
+    path_value: Option<&OsStr>,
+    tool_dir: &Path,
+) -> anyhow::Result<String> {
+    let mut search = UvSearch::default();
+    if let Some(found) =
+        path_value.and_then(|path| find_executable("uv", path, project, &mut search))
     {
-        return Ok(from_path.to_string_lossy().to_string());
+        return Ok(found.to_string_lossy().to_string());
     }
     let uv_name = if cfg!(windows) { "uv.exe" } else { "uv" };
-    let local_uv = home_dir().join(".local").join("bin").join(uv_name);
+    let local_uv = tool_dir.join(uv_name);
     if (crate::kernel::python_env::safe_executable_path(&local_uv, project)
         || crate::kernel::python_env::safe_home_uv(&local_uv, project))
         && is_executable(&local_uv)
     {
         return Ok(local_uv.to_string_lossy().to_string());
     }
-    Err(anyhow!(
+    search.searched.push(tool_dir.to_path_buf());
+
+    let mut message = format!(
         "uv is required to set up the Python kernel. Install uv yourself: {UV_INSTALL_COMMAND}"
-    ))
+    );
+    if search.searched.is_empty() {
+        message.push_str("\nNo location was searched: PATH is unset.");
+    } else {
+        let locations: Vec<String> = search
+            .searched
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        let _ = write!(message, "\nLooked for uv in: {}", locations.join(", "));
+    }
+    if search.skipped > 0 {
+        let _ = write!(
+            message,
+            "\n{} PATH entr{} skipped as unsafe to run from.",
+            search.skipped,
+            if search.skipped == 1 {
+                "y was"
+            } else {
+                "ies were"
+            }
+        );
+    }
+    message.push_str(
+        "\nIf uv was installed after Prime Agent started, restart Prime Agent so it picks up the new PATH.",
+    );
+    Err(anyhow!(message))
 }
 
 #[cfg(all(test, unix))]
@@ -129,7 +196,7 @@ mod safe_uv_tests {
         symlink(project.join("uv"), alias.join("uv")).unwrap();
         let path = std::env::join_paths([Path::new("."), &project, &alias, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&project)),
+            find_executable("uv", &path, Some(&project), &mut UvSearch::default()),
             Some(trusted.join("uv"))
         );
 
@@ -138,7 +205,7 @@ mod safe_uv_tests {
         std::fs::set_permissions(&ancestor_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = std::env::join_paths([root.path()]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&project)),
+            find_executable("uv", &path, Some(&project), &mut UvSearch::default()),
             Some(ancestor_uv)
         );
     }
@@ -161,7 +228,7 @@ mod safe_uv_tests {
         }
         let path = std::env::join_paths([&sibling, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&project)),
+            find_executable("uv", &path, Some(&project), &mut UvSearch::default()),
             Some(trusted.join("uv"))
         );
     }
@@ -185,7 +252,7 @@ mod safe_uv_tests {
         }
         let path = std::env::join_paths([&outer_tools, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&inner)),
+            find_executable("uv", &path, Some(&inner), &mut UvSearch::default()),
             Some(trusted.join("uv"))
         );
     }
@@ -204,7 +271,7 @@ mod safe_uv_tests {
         std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = std::env::join_paths([Path::new("."), &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(filesystem_root)),
+            find_executable("uv", &path, Some(filesystem_root), &mut UvSearch::default()),
             Some(uv)
         );
     }
@@ -213,6 +280,35 @@ mod safe_uv_tests {
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn a_missing_uv_names_every_location_it_searched() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let home = root.path().join("home");
+        let tools = root.path().join("tools");
+        let home_bin = home.join(".local").join("bin");
+        for dir in [&project, &tools, &home_bin] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // An entry inside the project is refused by the safety filter, so the message also
+        // reports it as skipped rather than silently omitting it.
+        let path = std::env::join_paths([&project, &tools]).unwrap();
+        let error = resolve_uv(Some(&project), Some(&path), &home_bin).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains(&tools.display().to_string()),
+            "PATH directory missing from: {message}"
+        );
+        assert!(
+            message.contains(&home_bin.display().to_string()),
+            "home tool directory missing from: {message}"
+        );
+        assert!(
+            message.contains("1 PATH entry was skipped as unsafe to run from."),
+            "skipped entry not reported: {message}"
+        );
+    }
 
     #[test]
     fn uv_search_applies_the_vanished_project_rule() {
@@ -235,7 +331,7 @@ mod search_tests {
         }
         let path = std::env::join_paths([&sibling, &trusted]).unwrap();
         assert_eq!(
-            find_executable("uv", &path, Some(&vanished)),
+            find_executable("uv", &path, Some(&vanished), &mut UvSearch::default()),
             Some(trusted.join(uv_name))
         );
     }
