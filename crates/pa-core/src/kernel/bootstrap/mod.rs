@@ -382,8 +382,11 @@ async fn ensure_kernel_venv(
     }
     .await;
     drop(release_lock);
-    options.report("✓ ready");
-    result.map_err(|error| format_bootstrap_failure(&error))
+    let result = result.map_err(|error| format_bootstrap_failure(&error));
+    if result.is_ok() {
+        options.report("✓ ready");
+    }
+    result
 }
 
 /// The venv's directory denies writes to this user, so the bootstrap lock cannot be
