@@ -53,7 +53,7 @@ impl AgentSessionEngine {
                 })
                 .collect(),
             // Fail closed on an unreadable policy.
-            DaemonAllowlist::Unreadable(_) => Vec::new(),
+            DaemonAllowlist::Unreadable { .. } => Vec::new(),
         }
     }
 

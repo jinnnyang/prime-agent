@@ -3,7 +3,7 @@
 //! allowlist loudly (never a fallback) and emit the adoption event
 //! (`model refused`).
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pa_core::models::ModelAllowlistRefusal;
 use pa_telemetry::TelemetryClient;
@@ -20,19 +20,30 @@ pub enum DaemonAllowlist {
     /// The global settings document could not be loaded (lock contention,
     /// read, or parse failure): the configured policy is unknown, so every
     /// resolution fails loudly instead of bypassing it.
-    Unreadable(String),
+    Unreadable {
+        /// The global settings file the policy would have come from.
+        path: PathBuf,
+        /// What is wrong with it, in the loader's own words.
+        reason: String,
+    },
 }
 
 /// Load the daemon allowlist state (settings `allowedModels`, global
 /// scope).
 pub(crate) fn load(cwd: &Path, agent_dir: &Path) -> DaemonAllowlist {
+    // The global settings document `SettingsManager` reads for this agent
+    // dir (`FileSettingsStorage`'s global path).
+    let settings_path = agent_dir.join("settings.json");
     let settings = pa_core::settings::SettingsManager::create(cwd, agent_dir);
     if let Some(error) = settings
         .errors()
         .iter()
         .find(|error| error.scope == pa_core::settings::SettingsScope::Global)
     {
-        return DaemonAllowlist::Unreadable(error.message.clone());
+        return DaemonAllowlist::Unreadable {
+            path: settings_path,
+            reason: error.message.clone(),
+        };
     }
     if let Some(patterns) = settings.get_allowed_models() {
         DaemonAllowlist::Allowed(patterns)
@@ -54,7 +65,10 @@ pub(crate) fn load(cwd: &Path, agent_dir: &Path) -> DaemonAllowlist {
             malformed.then(|| "allowedModels is present but is not an array of strings".to_string())
         });
         match unreadable {
-            Some(message) => DaemonAllowlist::Unreadable(message),
+            Some(reason) => DaemonAllowlist::Unreadable {
+                path: settings_path,
+                reason,
+            },
             None => DaemonAllowlist::Unrestricted,
         }
     }
@@ -77,10 +91,11 @@ pub(crate) fn assert_allowed(allowlist: &DaemonAllowlist, selector: &str) -> Res
                 .into())
             }
         }
-        DaemonAllowlist::Unreadable(error) => Err(anyhow::anyhow!(
-            "The daemon model allowlist could not be read ({error}); \
+        DaemonAllowlist::Unreadable { path, reason } => Err(anyhow::anyhow!(
+            "The daemon model allowlist could not be read from {}: {reason}; \
              refusing to resolve model \"{selector}\" — the daemon fails closed instead of \
-             bypassing the configured allowedModels policy. Fix settings.json and retry."
+             bypassing the configured allowedModels policy. Fix that file and retry.",
+            path.display()
         )),
     }
 }
@@ -223,11 +238,15 @@ mod tests {
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("settings.json"), "{ not json").unwrap();
         let state = load(dir.path(), &agent_dir);
-        assert!(matches!(state, DaemonAllowlist::Unreadable(_)));
+        assert!(matches!(state, DaemonAllowlist::Unreadable { .. }));
         let error = assert_allowed(&state, "prime-inference/mock-1").expect_err("fail closed");
         let message = error.to_string();
         assert!(message.contains("could not be read"), "{message}");
         assert!(message.contains("fails closed"), "{message}");
+        assert!(
+            message.contains(&agent_dir.join("settings.json").display().to_string()),
+            "the refusal must name the file to fix: {message}"
+        );
         assert!(
             error.downcast_ref::<ModelAllowlistRefusal>().is_none(),
             "fail-closed is not a pattern refusal"
@@ -249,7 +268,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             load(dir.path(), &agent_dir),
-            DaemonAllowlist::Unreadable(_)
+            DaemonAllowlist::Unreadable { .. }
         ));
         std::fs::write(
             agent_dir.join("settings.json"),
@@ -258,7 +277,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             load(dir.path(), &agent_dir),
-            DaemonAllowlist::Unreadable(_)
+            DaemonAllowlist::Unreadable { .. }
         ));
         std::fs::write(
             agent_dir.join("settings.json"),
@@ -287,7 +306,7 @@ mod tests {
             std::fs::write(agent_dir.join("settings.json"), corrupted).unwrap();
             let state = load(dir.path(), &agent_dir);
             assert!(
-                matches!(state, DaemonAllowlist::Unreadable(_)),
+                matches!(state, DaemonAllowlist::Unreadable { .. }),
                 "{corrupted} must fail closed, got {state:?}"
             );
             let error = assert_allowed(&state, "prime-inference/mock-1").expect_err("closed");
