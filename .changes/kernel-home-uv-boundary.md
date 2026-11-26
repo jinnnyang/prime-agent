@@ -1,0 +1,1 @@
+- Fixed the Windows kernel bootstrap refusing the uv install at `%USERPROFILE%\.local\bin\uv.exe` when Prime Agent was started from the home directory.
