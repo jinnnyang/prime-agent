@@ -1,4 +1,4 @@
-//! The model-resolution tests (catalog, allowlist, restore/switch/configure, the thinking clamp).
+//! The model-resolution tests (catalog, restore/switch/configure, the thinking clamp).
 use super::*;
 
 /// A models.json custom provider (name has no env-key mapping), with an
@@ -327,56 +327,6 @@ fn restore_test_engine(
     .expect("engine")
 }
 
-#[test]
-fn the_startup_chain_refuses_models_outside_the_allowlist() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let agent_dir = dir.path().join("agent");
-    write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
-    std::fs::write(
-        agent_dir.join("settings.json"),
-        serde_json::json!({ "allowedModels": ["anthropic/*"] }).to_string(),
-    )
-    .unwrap();
-    let engine = AgentSessionEngine::new(AgentEngineConfig {
-        cwd: dir.path().to_path_buf(),
-        agent_dir,
-        provider: None,
-        model: None,
-        api_key: None,
-        thinking: None,
-        session_dir: None,
-        session_file: None,
-        faux_script: None,
-        supervisor_link: None,
-        telemetry_disabled: Some(true),
-        cron_store: None,
-        queued_steering_probe: None,
-    })
-    .unwrap();
-    let error = engine
-        .resolve_registry_model()
-        .expect_err("off-allowlist model refused");
-    let refusal = error
-        .downcast_ref::<pa_core::models::ModelAllowlistRefusal>()
-        .expect("typed refusal");
-    assert_eq!(refusal.selector, "battery/mock-1");
-    assert!(
-        error
-            .to_string()
-            .contains("blocked by the daemon model allowlist"),
-        "{error}"
-    );
-
-    std::fs::write(
-        engine.config.agent_dir.join("settings.json"),
-        serde_json::json!({ "allowedModels": ["battery/*"] }).to_string(),
-    )
-    .unwrap();
-    let model = engine.resolve_registry_model().expect("resolved model");
-    assert_eq!(model.provider, "battery");
-    assert_eq!(model.id, "mock-1");
-}
-
 /// The create-config key override pins the KEY, never the headers: a
 /// request target with an explicit key still ships the registry's
 /// merged headers (Macroscope PR #2755: `switch_model` dropped the
@@ -544,54 +494,6 @@ async fn fresh_session_without_a_saved_model_keeps_the_startup_chain() {
     assert!(engine.model_fallback_message().is_none());
     let resolved = engine.resolve_registry_model().expect("startup chain");
     assert_eq!(resolved.id, "z-ai/glm-5.3");
-}
-
-#[tokio::test]
-async fn a_filtered_default_names_the_modelcatalog_pattern_in_the_fallback() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let agent_dir = dir.path().join("agent");
-    write_prime_auth(&agent_dir);
-    let server = MockCatalogServer::start(Vec::new()).await;
-    install_loopback_catalog(&agent_dir, &server);
-    // Deny the whole default provider: no same-provider model survives the
-    // filter, so the saved default's template rebuild fails and the chain
-    // falls back to another provider (a single-model deny would be defeated
-    // by the template rebuild on purpose — the selection path is unaffected).
-    std::fs::write(
-        agent_dir.join("settings.json"),
-        json!({
-            "defaultProvider": "anthropic",
-            "defaultModel": "claude-sonnet-4-5",
-            "modelCatalog": { "deny": ["anthropic/*"] }
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let mut session =
-        crate::session_store::SessionFile::create(dir.path().to_str().unwrap_or("/tmp"), None, 0);
-    let path = dir.path().join(crate::session_store::session_file_name(
-        session.session_id(),
-    ));
-    session.set_path(path.clone());
-    session.rewrite().unwrap();
-    let engine = restore_test_engine(dir.path(), None, None);
-    engine.set_session_file(path.clone());
-
-    engine.restore_session_model(&path, None).await;
-    let resolved = engine.resolve_registry_model().expect("startup chain");
-    assert_eq!(
-        resolved.provider, "prime-inference",
-        "the chain fell back past the denied provider"
-    );
-    let message = engine
-        .model_fallback_message()
-        .expect("the denied default warns");
-    assert!(
-        message.starts_with(
-            "Default model anthropic/claude-sonnet-4-5 is hidden by modelCatalog filter \"anthropic/*\". Using prime-inference/"
-        ),
-        "the fallback names the user's own filter, not a vague unavailability: {message}"
-    );
 }
 
 #[tokio::test]
@@ -888,54 +790,6 @@ async fn a_replacement_re_clamps_the_thinking_level_against_the_restored_model()
 }
 
 #[test]
-fn switch_model_never_poisons_the_selection_with_a_refused_candidate() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let agent_dir = dir.path().join("agent");
-    write_custom_provider_models_json(&agent_dir, "http://127.0.0.1:9");
-    std::fs::write(
-        agent_dir.join("settings.json"),
-        serde_json::json!({ "allowedModels": ["battery/mock-1"] }).to_string(),
-    )
-    .unwrap();
-    let engine = AgentSessionEngine::new(AgentEngineConfig {
-        cwd: dir.path().to_path_buf(),
-        agent_dir,
-        provider: None,
-        model: None,
-        api_key: None,
-        thinking: None,
-        session_dir: None,
-        session_file: None,
-        faux_script: None,
-        supervisor_link: None,
-        telemetry_disabled: Some(true),
-        cron_store: None,
-        queued_steering_probe: None,
-    })
-    .unwrap();
-    let model = engine.resolve_registry_model().expect("resolved model");
-    assert_eq!(model.id, "mock-1");
-    let switched = engine.switch_model(EngineModelSelection {
-        provider: Some("battery".to_string()),
-        model: Some("mock-2".to_string()),
-        api_key: None,
-        thinking: None,
-    });
-    assert!(!switched, "off-allowlist switch refused");
-    let model = engine.resolve_registry_model().expect("still resolvable");
-    assert_eq!(model.id, "mock-1");
-    let switched = engine.switch_model(EngineModelSelection {
-        provider: Some("battery".to_string()),
-        model: Some("mock-1".to_string()),
-        api_key: None,
-        thinking: None,
-    });
-    assert!(switched, "allowed switch proceeds");
-    let model = engine.resolve_registry_model().expect("resolved model");
-    assert_eq!(model.id, "mock-1");
-}
-
-#[test]
 fn switch_model_propagates_the_new_model_to_the_child_identity() {
     let dir = tempfile::tempdir().unwrap();
     let agent_dir = dir.path().join("agent");
@@ -972,7 +826,7 @@ fn switch_model_propagates_the_new_model_to_the_child_identity() {
         api_key: None,
         thinking: None,
     });
-    assert!(switched, "the switch proceeds without an allowlist");
+    assert!(switched, "the switch proceeds");
     assert_eq!(
         children.parent_model().as_deref(),
         Some("battery/mock-1"),

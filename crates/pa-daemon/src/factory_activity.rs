@@ -5,7 +5,7 @@
 //! payload's `action` rides the out-of-band kernel frame, and the kernel's
 //! reply returns verbatim (the run registry stays kernel-owned); the
 //! unscoped graph also carries the session's stored spec count. The
-//! `run` action's model preflight (the allowlist pin, request auth)
+//! `run` action's model preflight (request auth)
 //! happens in the session engine before the frame — a doomed run fails
 //! before any child spawns.
 

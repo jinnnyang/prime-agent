@@ -10,11 +10,8 @@ use super::load::from_value_lenient;
 use super::merge::{deep_merge, migrate};
 use super::storage::{SettingsScope, SettingsStorage};
 use super::types::{
-    ModelCatalogSettings, QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting,
-    UpdateChannel,
+    QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting, UpdateChannel,
 };
-use crate::models::catalog_visibility::invalid_glob;
-use crate::models::CatalogVisibility;
 
 pub const RECENT_MODELS_LIMIT: usize = 20;
 pub const DEFAULT_IDLE_EVICTION_MINUTES: u64 = 90;
@@ -34,10 +31,6 @@ pub struct SettingsManager {
     merged: Settings,
     runtime_overrides: Settings,
     errors: Vec<SettingsError>,
-    /// The raw global document (parsed JSON before the lenient load): the allowlist
-    /// gate distinguishes an ABSENT `allowedModels` key (unrestricted) from a
-    /// PRESENT-but-malformed one (fails closed); typed `Settings` drops both to `None`.
-    global_raw: Option<serde_json::Value>,
     /// Load failures per scope; a scope whose file failed to load is never written back.
     global_load_error: Option<String>,
     project_load_error: Option<String>,
@@ -46,7 +39,7 @@ pub struct SettingsManager {
 impl SettingsManager {
     pub fn from_storage(storage: Arc<dyn SettingsStorage>) -> Self {
         let mut errors = Vec::new();
-        let (global, global_raw, global_load_error) =
+        let (global, _, global_load_error) =
             load_scope(storage.as_ref(), SettingsScope::Global, &mut errors);
         let (project, project_raw, project_load_error) =
             load_scope(storage.as_ref(), SettingsScope::Project, &mut errors);
@@ -59,7 +52,6 @@ impl SettingsManager {
             project_raw,
             merged,
             runtime_overrides: Settings::default(),
-            global_raw,
             errors,
             global_load_error,
             project_load_error,
@@ -112,13 +104,6 @@ impl SettingsManager {
         &self.global
     }
 
-    /// The raw global document (post-migration, pre-lenient-load value);
-    /// `None` when the scope has no document or it failed to parse.
-    #[must_use]
-    pub fn global_raw(&self) -> Option<&serde_json::Value> {
-        self.global_raw.as_ref()
-    }
-
     #[must_use]
     pub fn project_settings(&self) -> &Settings {
         &self.project
@@ -153,7 +138,7 @@ impl SettingsManager {
     /// the manager instead.
     pub fn reload(&mut self) -> Result<()> {
         let mut errors = std::mem::take(&mut self.errors);
-        let (global, global_raw, global_load_error) =
+        let (global, _, global_load_error) =
             load_scope(self.storage.as_ref(), SettingsScope::Global, &mut errors);
         let (project, project_raw, project_load_error) =
             load_scope(self.storage.as_ref(), SettingsScope::Project, &mut errors);
@@ -161,7 +146,6 @@ impl SettingsManager {
         self.pending_global_fields.clear();
         self.project = project;
         self.project_raw = project_raw;
-        self.global_raw = global_raw;
         self.global_load_error = global_load_error;
         self.project_load_error = project_load_error;
         self.errors = errors;
@@ -612,44 +596,6 @@ impl SettingsManager {
             .filter(|m| !m.is_empty())
     }
 
-    /// The daemon-level model allowlist (settings `allowedModels`), enforced at every
-    /// daemon model resolution — a model outside fails loudly, never a fallback.
-    /// Rust-only guardrail; `None` is unrestricted; global scope only, so a project
-    /// cannot weaken a box-level pin; a list that trims to empty behaves as unset.
-    #[must_use]
-    pub fn get_allowed_models(&self) -> Option<Vec<String>> {
-        let patterns = self.global.allowed_models.as_ref()?;
-        let patterns: Vec<String> = patterns
-            .iter()
-            .map(|pattern| pattern.trim().to_string())
-            .filter(|pattern| !pattern.is_empty())
-            .collect();
-        (!patterns.is_empty()).then_some(patterns)
-    }
-
-    /// The catalog visibility filters (settings `modelCatalog.allow`/`deny`),
-    /// applied when the model catalog resolves listings. Rust-only fork
-    /// extension; global scope only (the catalog chain is shared per agent
-    /// dir, a project cannot retint a shared data source); blank patterns
-    /// trim away and a list that trims to empty behaves as unset.
-    #[must_use]
-    pub fn get_model_catalog_visibility(&self) -> Option<CatalogVisibility> {
-        let settings: &ModelCatalogSettings = self.global.model_catalog.as_ref()?;
-        let trim = |patterns: &Option<Vec<String>>| -> Vec<String> {
-            patterns
-                .iter()
-                .flatten()
-                .map(|pattern| pattern.trim().to_string())
-                .filter(|pattern| !pattern.is_empty())
-                .collect()
-        };
-        let visibility = CatalogVisibility {
-            allow: trim(&settings.allow),
-            deny: trim(&settings.deny),
-        };
-        (!visibility.is_empty()).then_some(visibility)
-    }
-
     /// The persisted default a fresh session starts from; the stored
     /// string is the same vocabulary `get_default_service_tier` parses.
     ///
@@ -987,7 +933,6 @@ impl SettingsManager {
         }
         let snapshot = serde_json::to_value(&self.global)?;
         let mut failure = None;
-        let mut saved = None;
         self.storage
             .with_lock(SettingsScope::Global, &mut |current| {
                 let result = (|| -> Result<String> {
@@ -1017,7 +962,6 @@ impl SettingsManager {
                     }
                     let value = serde_json::Value::Object(document);
                     let content = serde_json::to_string_pretty(&value)?;
-                    saved = Some(value);
                     Ok(content)
                 })();
                 match result {
@@ -1031,7 +975,6 @@ impl SettingsManager {
         if let Some(error) = failure {
             return Err(error);
         }
-        self.global_raw = saved;
         self.pending_global_fields.clear();
         Ok(())
     }
@@ -1111,23 +1054,6 @@ fn load_scope(
         other => other,
     };
     let mut settings = from_value_lenient(&migrated);
-    if let Some(catalog) = settings.model_catalog.as_ref() {
-        for pattern in catalog
-            .allow
-            .iter()
-            .flatten()
-            .chain(catalog.deny.iter().flatten())
-        {
-            if let Some(message) = invalid_glob(pattern) {
-                errors.push(SettingsError {
-                    scope,
-                    message: format!(
-                        "modelCatalog pattern \"{pattern}\" is not a valid glob: {message}"
-                    ),
-                });
-            }
-        }
-    }
     if scope == SettingsScope::Project {
         // A repository can supply this file before the user opens it. Keep its
         // document on disk, but never let it select session storage or executable
@@ -1147,65 +1073,6 @@ fn load_scope(
 mod tests {
     use super::*;
     use crate::settings::types::{MarkdownSettings, DEFAULT_PYTHON_CELL_TIMEOUT_MS};
-
-    /// `modelCatalog` filters read the GLOBAL scope only (they color a
-    /// shared per-agent catalog; a project cannot retint the data source)
-    /// and blank patterns trim to unset.
-    #[test]
-    fn model_catalog_visibility_reads_the_global_scope_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = dir.path().join("cwd");
-        let agent_dir = dir.path().join("agent");
-        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
-        std::fs::create_dir_all(&agent_dir).unwrap();
-        // The project scope tries to deny everything.
-        std::fs::write(
-            cwd.join(".prime/agent/settings.json"),
-            r#"{ "modelCatalog": { "deny": ["*"] } }"#,
-        )
-        .unwrap();
-        std::fs::write(
-            agent_dir.join("settings.json"),
-            r#"{ "modelCatalog": { "deny": ["*-preview", "  ", "databricks/*"] } }"#,
-        )
-        .unwrap();
-        let manager = SettingsManager::create(&cwd, &agent_dir);
-        let visibility = manager.get_model_catalog_visibility().expect("filters set");
-        assert_eq!(
-            visibility.deny,
-            vec!["*-preview".to_string(), "databricks/*".to_string()]
-        );
-        assert!(visibility.allow.is_empty());
-    }
-
-    #[test]
-    fn invalid_model_catalog_globs_are_rejected_at_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = dir.path().join("cwd");
-        let agent_dir = dir.path().join("agent");
-        std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::create_dir_all(&agent_dir).unwrap();
-        std::fs::write(
-            agent_dir.join("settings.json"),
-            r#"{ "modelCatalog": { "allow": ["[*-preview"], "deny": ["databricks/*"] } }"#,
-        )
-        .unwrap();
-        let manager = SettingsManager::create(&cwd, &agent_dir);
-        let messages: Vec<&str> = manager
-            .errors()
-            .iter()
-            .map(|error| error.message.as_str())
-            .collect();
-        assert_eq!(messages.len(), 1, "{messages:?}");
-        assert!(messages[0].contains("[*-preview"), "{messages:?}");
-        let visibility = manager
-            .get_model_catalog_visibility()
-            .expect("filters kept");
-        assert_eq!(visibility.allow, vec!["[*-preview".to_string()]);
-        assert_eq!(visibility.deny, vec!["databricks/*".to_string()]);
-        assert!(!visibility.keeps("databricks", "dbrx"));
-        assert!(!visibility.keeps("prime-inference", "glm"));
-    }
 
     #[test]
     #[cfg(unix)]

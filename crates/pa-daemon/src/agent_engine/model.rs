@@ -40,15 +40,7 @@ impl AgentSessionEngine {
         })
         .or_else(|| all.first().cloned());
         if let (Some(model), Some(default)) = (&resolved, &default) {
-            let visibility = settings.get_model_catalog_visibility().unwrap_or_default();
-            self.record_startup_default_fallback(
-                model,
-                default,
-                &scope,
-                &available,
-                &all,
-                &visibility,
-            );
+            self.record_startup_default_fallback(model, default, &scope, &available, &all);
         }
         resolved
     }
@@ -60,7 +52,6 @@ impl AgentSessionEngine {
         scope: &StartupScope,
         available_models: &[Model],
         all_models: &[Model],
-        visibility: &pa_core::models::CatalogVisibility,
     ) {
         let (provider, model_id) = default;
         if scope.is_continuing || (model.provider == *provider && model.id == *model_id) {
@@ -93,18 +84,10 @@ impl AgentSessionEngine {
         if !wanted {
             return;
         }
-        let message = match visibility.denying_pattern(provider, model_id) {
-            // The user's own modelCatalog filters hid the configured default;
-            // name the pattern so the silent retarget explains itself (#12).
-            Some(pattern) => format!(
-                "Default model {provider}/{model_id} is hidden by modelCatalog filter \"{pattern}\". Using {}/{}",
-                model.provider, model.id
-            ),
-            None => format!(
-                "Default model {provider}/{model_id} is not available. Using {}/{}",
-                model.provider, model.id
-            ),
-        };
+        let message = format!(
+            "Default model {provider}/{model_id} is not available. Using {}/{}",
+            model.provider, model.id
+        );
         eprintln!("{message}");
         *decision = Some(RestoredSessionModel {
             session_file,
@@ -260,33 +243,8 @@ impl AgentSessionEngine {
         pa_core::models::resolve_cli_model(Some(&provider), &model_id, registry.get_all()).model
     }
 
-    /// Emit the daemon model-allowlist refusal's adoption event (schema v1
-    /// `model refused`) from any of this worker's enforcement seams.
-    pub(crate) fn note_model_refused(&self, surface: &str, selector: &str) {
-        self.model_refusal_telemetry
-            .note_refused(surface, selector, &self.cwd());
-    }
-
-    /// Resolve the model through the composed registry, then enforce the
-    /// settings `allowedModels` allowlist: a resolution outside the allowlist
-    /// fails loudly here (never a silent fallback), emitting `model refused`.
+    /// The registry resolution: the flagged-model arm or the startup chain.
     pub(super) fn resolve_registry_model(&self) -> anyhow::Result<Model> {
-        let model = self.resolve_registry_model_unchecked()?;
-        let selector = format!("{}/{}", model.provider, model.id);
-        let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-        if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector) {
-            if let Some(refusal) = refusal.downcast_ref::<pa_core::models::ModelAllowlistRefusal>()
-            {
-                self.note_model_refused("session_start", &refusal.selector);
-            }
-            return Err(refusal);
-        }
-        Ok(model)
-    }
-
-    /// The registry resolution before the allowlist gate: the flagged-model
-    /// arm or the startup chain.
-    fn resolve_registry_model_unchecked(&self) -> anyhow::Result<Model> {
         let auth = pa_core::auth::AuthStorage::create(&self.config.agent_dir);
         let registry =
             pa_core::models::ModelRegistry::create(auth, self.config.agent_dir.join("models.json"));

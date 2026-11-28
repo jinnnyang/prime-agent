@@ -942,52 +942,6 @@ const DAEMON_EVENT: EventRule = EventRule {
     ],
 };
 
-/// `model catalog filtered` (v2, the fork's catalog visibility feature):
-/// a served catalog listing reflected the global settings
-/// `modelCatalog.allow`/`deny` filters. Surface and counts only — never
-/// the pattern text, the hidden selectors, or the catalog payload.
-const MODEL_CATALOG_FILTERED: EventRule = EventRule {
-    name: "model catalog filtered",
-    since: 2,
-    properties: &[
-        (
-            "surface",
-            required(enum_rule(&["picker", "model_list"], "picker")),
-        ),
-        ("hidden", required(count())),
-        ("patterns", required(count())),
-    ],
-};
-
-/// The settings allowlist guardrail.
-const MODEL_REFUSED: EventRule = EventRule {
-    name: "model refused",
-    since: 1,
-    properties: &[
-        (
-            "surface",
-            required(enum_rule(
-                &[
-                    "set_model",
-                    "cycle_model",
-                    "spawn",
-                    "create_session",
-                    "session_start",
-                ],
-                "session_start",
-            )),
-        ),
-        (
-            "provider_category",
-            optional(enum_rule(PROVIDER_CATEGORIES, "custom")),
-        ),
-        (
-            "model_category",
-            optional(enum_rule(MODEL_CATEGORIES, "custom")),
-        ),
-    ],
-};
-
 /// `session archived` (v1): the daemon `kill` path.
 const SESSION_ARCHIVED: EventRule = EventRule {
     name: "session archived",
@@ -1302,8 +1256,6 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_INSTALLATION_STAGE,
         &STARTUP,
         &DAEMON_EVENT,
-        &MODEL_CATALOG_FILTERED,
-        &MODEL_REFUSED,
         &SESSION_ARCHIVED,
         &TUI_EXIT,
         &TUI_IPYTHON_BASH_RENDERED,

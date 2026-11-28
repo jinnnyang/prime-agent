@@ -521,10 +521,6 @@ async fn an_rlm_spawn_child_inherits_the_parent_worker_env() {
         std::sync::Arc::new(SupervisorLink::new(socket.clone())),
         agent_dir.clone(),
         "parent-active-id".to_string(),
-        std::sync::Arc::new(pa_daemon::model_allowlist::ModelRefusalTelemetry::new(
-            agent_dir.clone(),
-            /*telemetry_disabled*/ true,
-        )),
         // This process stands in for the parent and has no worker token;
         // this fixture reads the child's env, not authenticated roster joins.
         String::new(),

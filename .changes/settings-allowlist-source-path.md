@@ -1,1 +1,0 @@
-- Fixed the daemon model-allowlist refusal blaming `allowedModels` for any broken `settings.json` without naming the file; it now names the settings file and the actual parse error.

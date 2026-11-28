@@ -220,10 +220,6 @@ fn children(socket: &Path, agent_dir: &Path, script: &Path, depth: u32) -> Super
         Arc::new(SupervisorLink::new(socket.to_path_buf())),
         agent_dir.to_path_buf(),
         "parent-active-id".to_string(),
-        std::sync::Arc::new(pa_daemon::model_allowlist::ModelRefusalTelemetry::new(
-            agent_dir.to_path_buf(),
-            /*telemetry_disabled*/ true,
-        )),
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
@@ -739,10 +735,6 @@ async fn a_decision_child_spawn_runs_the_decision_engine_end_to_end() {
             Arc::new(SupervisorLink::new(socket.clone())),
             agent_dir.clone(),
             parent.active_session_id.clone(),
-            std::sync::Arc::new(pa_daemon::model_allowlist::ModelRefusalTelemetry::new(
-                agent_dir.clone(),
-                /*telemetry_disabled*/ true,
-            )),
             String::new(),
         );
         sessions.set_identity(ParentIdentity {
@@ -997,10 +989,6 @@ async fn a_passivated_decision_child_revives_as_a_decision_child_and_answers() {
             Arc::new(SupervisorLink::new(socket.clone())),
             agent_dir.clone(),
             parent.active_session_id.clone(),
-            std::sync::Arc::new(pa_daemon::model_allowlist::ModelRefusalTelemetry::new(
-                agent_dir.clone(),
-                /*telemetry_disabled*/ true,
-            )),
             String::new(),
         );
         sessions.set_identity(ParentIdentity {

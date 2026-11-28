@@ -1,8 +1,7 @@
-//! The one-shot daemon/worker event trackers: the `daemon event` and
-//! `model refused` surfaces the supervisor and model-allowlist seams call
-//! once per lifecycle event. Counts/categories only, never session
+//! The one-shot daemon/worker event trackers: the `daemon event` surface the
+//! supervisor seams call once per lifecycle event. Counts/categories only, never session
 //! payload (the module's privacy contract).
-use super::{base_properties, model_category, provider_category, TelemetryClient, Value};
+use super::{base_properties, TelemetryClient, Value};
 
 /// Track the supervision summary (`daemon event`, kind `summary`): the
 /// frequent supervision events of one window as `<kind>_count`
@@ -38,42 +37,6 @@ pub fn track_deleted_child_usage_captured(client: &TelemetryClient, source: &str
     properties.set("source", Value::from(source));
     properties.set("count", Value::from(count));
     client.track("daemon event", properties);
-}
-
-/// Track a daemon model-allowlist refusal (`model refused`, schema v1): a daemon model
-/// resolution refused a model outside the settings `allowedModels` allowlist. Categories and
-/// surface only — never the refused selector, pattern content, or session payload.
-pub fn track_model_refused(
-    client: &TelemetryClient,
-    surface: &str,
-    provider: &str,
-    model_id: &str,
-) {
-    let mut properties = base_properties("daemon");
-    properties.set("surface", Value::from(surface));
-    properties.set(
-        "provider_category",
-        Value::from(provider_category(Some(provider))),
-    );
-    properties.set("model_category", Value::from(model_category(model_id)));
-    client.track("model refused", properties);
-}
-
-/// Track a served filtered catalog listing (`model catalog filtered`,
-/// schema v2): the settings `modelCatalog` visibility filter hid entries
-/// from this listing. Surface and counts only — never the pattern text,
-/// the hidden selectors, or the catalog payload.
-pub fn track_model_catalog_filtered(
-    client: &TelemetryClient,
-    surface: &str,
-    hidden: usize,
-    patterns: usize,
-) {
-    let mut properties = base_properties("daemon");
-    properties.set("surface", Value::from(surface));
-    properties.set("hidden", Value::from(hidden));
-    properties.set("patterns", Value::from(patterns));
-    client.track("model catalog filtered", properties);
 }
 
 /// Track the boot descriptor-adoption pass's `daemon event` (schema v1, kind

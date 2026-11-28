@@ -437,15 +437,6 @@ impl SessionEngine for AgentSessionEngine {
     }
 
     fn switch_model(&self, selection: EngineModelSelection) -> bool {
-        if let (Some(provider), Some(model)) =
-            (selection.provider.as_deref(), selection.model.as_deref())
-        {
-            let selector = format!("{provider}/{model}");
-            let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-            if crate::model_allowlist::assert_allowed(&allowlist, &selector).is_err() {
-                return false;
-            }
-        }
         self.configure_model(selection);
         let Ok(model) = self.resolve_model() else {
             return false;

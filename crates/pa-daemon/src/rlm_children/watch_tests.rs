@@ -443,10 +443,6 @@ async fn sessions_with_fake_child_subagents(
         link,
         std::env::temp_dir(),
         "parent-live".to_string(),
-        std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-            std::env::temp_dir(),
-            /*telemetry_disabled*/ true,
-        )),
         String::new(),
     );
     // A live parent carries its resolved model on the identity; the
@@ -540,10 +536,6 @@ async fn sessions_with_roster_peers(
         link,
         std::env::temp_dir(),
         "parent-live".to_string(),
-        std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-            std::env::temp_dir(),
-            /*telemetry_disabled*/ true,
-        )),
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
@@ -673,10 +665,6 @@ async fn a_delayed_roster_reply_keeps_the_newer_settled_observation() {
         Arc::new(crate::supervisor_link::SupervisorLink::new(socket)),
         dir.path().to_path_buf(),
         "parent-live".to_string(),
-        Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-            dir.path().to_path_buf(),
-            /*telemetry_disabled*/ true,
-        )),
         String::new(),
     );
     sessions
@@ -1239,9 +1227,6 @@ async fn a_decision_spawn_resolves_the_model_from_the_child_cwd() {
         Arc::new(crate::supervisor_link::SupervisorLink::new(socket)),
         agent_dir.clone(),
         "parent-live".to_string(),
-        std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-            agent_dir, /*telemetry_disabled*/ true,
-        )),
         String::new(),
     );
     sessions.set_identity(ParentIdentity {

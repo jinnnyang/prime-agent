@@ -68,42 +68,19 @@ pub(super) async fn wait_for_prompt_state(
     }
 }
 
-/// Resolve the child model with the daemon `allowedModels` allowlist enforced, refusing loudly with
-/// the typed error and the `model refused` event; the settings read runs on the blocking pool.
-async fn resolve_child_model_allowlisted(
+/// Resolve a child model against the session's own model.
+fn resolve_child_model_for_identity(
     this: &SupervisorChildSessionsInner,
     reference: Option<&str>,
-    surface: &'static str,
     target: &str,
 ) -> Result<String> {
     let identity = this.identity.lock().expect("identity lock").clone();
-    let cwd = identity.cwd.clone().unwrap_or_else(|| "/".to_string());
-    let load_cwd = cwd.clone();
-    let agent_dir = this.agent_dir.clone();
-    let allowlist = tokio::task::spawn_blocking(move || {
-        crate::model_allowlist::load(Path::new(&load_cwd), &agent_dir)
-    })
-    .await
-    .context("the allowlist load task join failed")?;
-    match resolve_child_model(
+    resolve_child_model(
         &this.agent_dir,
         reference,
         identity.model.as_deref(),
         target,
-        &allowlist,
-    ) {
-        Ok(model) => Ok(model),
-        Err(error) => {
-            if let Some(refusal) = error.downcast_ref::<pa_core::models::ModelAllowlistRefusal>() {
-                this.model_refusal_telemetry.note_refused(
-                    surface,
-                    &refusal.selector,
-                    Path::new(&cwd),
-                );
-            }
-            Err(error)
-        }
-    }
+    )
 }
 
 /// The `rlm.create_session` launch env (TS `createRlmRootSession`'s
@@ -189,13 +166,12 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 // spawn refuses with the same actionable message the
                 // decision path serves while the setting is unset or
                 // unresolvable, then resolves through the ordinary
-                // child-model path so the allowlist still gates the selector.
+                // child-model path.
                 let model = match request.kind {
                     pa_core::session_engine::rlm_host::RlmSpawnKind::Decision => {
                         // The selector lookup loads settings synchronously
                         // (a lock with bounded retries), so it runs off the
-                        // async executor — the same offload the allowlist
-                        // loader below it makes.
+                        // async executor.
                         let selector_cwd = cwd.clone();
                         let selector_agent_dir = this.agent_dir.clone();
                         let selector = tokio::task::spawn_blocking(move || {
@@ -207,17 +183,14 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         .await
                         .context("the decision selector load task join failed")?
                         .map_err(anyhow::Error::msg)?;
-                        resolve_child_model_allowlisted(&this, Some(&selector), "spawn", "subagent")
-                            .await?
+                        resolve_child_model_for_identity(&this, Some(&selector), "subagent")?
                     }
                     pa_core::session_engine::rlm_host::RlmSpawnKind::Subagent => {
-                        resolve_child_model_allowlisted(
+                        resolve_child_model_for_identity(
                             &this,
                             request.model.as_deref(),
-                            "spawn",
                             "subagent",
-                        )
-                        .await?
+                        )?
                     }
                 };
                 assert_thinking_supported(&this.agent_dir, request.thinking.as_deref(), &model)?;
@@ -459,13 +432,11 @@ impl RlmSubagentHost for SupervisorChildSessions {
             if identity.rlm_depth != 0 {
                 bail!("rlm.create_session is available only from a depth-0 session");
             }
-            let model = resolve_child_model_allowlisted(
+            let model = resolve_child_model_for_identity(
                 &this,
                 request.model.as_deref(),
-                "create_session",
                 "top-level session",
-            )
-            .await?;
+            )?;
             assert_thinking_supported(&this.agent_dir, request.thinking.as_deref(), &model)?;
             // A depth-0 resident session is created exactly like a client
             // `create`: the shared sessions dir and the requested cwd.

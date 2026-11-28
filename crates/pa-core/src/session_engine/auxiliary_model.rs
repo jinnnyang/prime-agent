@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use pa_types::ai::Model;
 
-/// The directories the settings (`auxiliaryModel`, `allowedModels`) and the
+/// The directories the settings (`auxiliaryModel`) and the
 /// model registry resolve against; `None` keeps the session model.
 #[derive(Debug, Clone)]
 pub struct AuxiliaryModelContext {
@@ -76,15 +76,6 @@ pub fn resolve_auxiliary_model(
     };
     if format!("{}/{}", session_model.provider, session_model.id).to_lowercase() == selector {
         return fallback();
-    }
-    // The daemon's `allowedModels` pin (rust-only guardrail, no TS
-    // equivalent) covers every pass model: a selector outside the pin
-    // falls back to the session model.
-    if let Some(allowlist) = settings.get_allowed_models() {
-        if !crate::models::model_allowed(&selector, &allowlist) {
-            warn_fallback(&selector, purpose);
-            return fallback();
-        }
     }
     // The TS find runs over the authenticated, non-stale catalog
     // (`_authenticatedRlmModels`); the registry's set is the same filter.
@@ -278,23 +269,5 @@ mod tests {
             Some(1_000),
         );
         assert_eq!(routed.model.id, "aux-model");
-    }
-
-    #[test]
-    fn selector_outside_the_allowlist_falls_back() {
-        let (_dir, context) = context_with_settings(&serde_json::json!({
-            "auxiliaryModel": "testaux/aux-model",
-            "allowedModels": ["faux/session-model"],
-        }));
-        let session = model("session-model", "faux", 8_000);
-        let routed = resolve_auxiliary_model(
-            &context,
-            "compaction summary",
-            &session,
-            Some("session-key"),
-            None,
-        );
-        assert_eq!(routed.model.id, "session-model");
-        assert_eq!(routed.api_key.as_deref(), Some("session-key"));
     }
 }

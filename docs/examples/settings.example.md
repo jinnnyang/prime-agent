@@ -27,7 +27,6 @@ Onboarding
 "providerBackupModel": null,          // 主模型不可用时的备选模型
 "imageModel": null,                   // 会话模型不接受图片输入时代跑图片轮的模型；null = 报配置提示
 "enabledModels": null,                // 联合模型允许列表（null = 不限制）
-"allowedModels": null,                // Rust 独有 daemon 级允许列表：列表外模型直接报错，不回退；null = 不限制
 
 ════════════════════════════════════════════
 更新

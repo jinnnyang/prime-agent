@@ -45,17 +45,11 @@ impl AgentSessionEngine {
                 .map(|link_config| link_config.socket_path.clone())
                 .unwrap_or_default(),
         ));
-        let model_refusal_telemetry =
-            std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-                config.agent_dir.clone(),
-                config.telemetry_disabled == Some(true),
-            ));
         let children = config.supervisor_link.as_ref().map(|link_config| {
             Arc::new(SupervisorChildSessions::new(
                 Arc::clone(&link),
                 config.agent_dir.clone(),
                 link_config.active_session_id.clone(),
-                std::sync::Arc::clone(&model_refusal_telemetry),
                 link_config.worker_token.clone(),
             ))
         });
@@ -196,7 +190,6 @@ impl AgentSessionEngine {
             auto_compaction_abort: std::sync::Mutex::new(None),
             compaction_summary_sink: std::sync::Mutex::new(None),
             progress_note_emit: std::sync::Mutex::new(None),
-            model_refusal_telemetry,
             semantic_identity: std::sync::Mutex::new(None),
         })
     }
