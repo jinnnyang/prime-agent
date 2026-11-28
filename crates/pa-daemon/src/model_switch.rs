@@ -14,8 +14,7 @@ const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "x
 
 impl Worker {
     /// `set_model { provider, modelId }`: resolve through the registry's
-    /// available catalog, enforce the daemon model allowlist (outside it
-    /// fails loudly, never a fallback), switch the engine, record the
+    /// available catalog, switch the engine, record the
     /// durable `model_change` row, and persist the settings default. The
     /// switch parks the runtime, so it runs on the blocking pool.
     pub(crate) async fn handle_set_model(&self, payload: &Value) -> DaemonResponse {
@@ -58,29 +57,6 @@ impl Worker {
             }
             Err(error) => return response_failure(None, "set_model", &error.to_string(), None),
         };
-        // The daemon model allowlist (settings `allowedModels`): outside
-        // it fails loudly, never a fallback.
-        let selector = format!("{provider}/{model_id}");
-        let cwd = {
-            let core = self.core.lock().unwrap();
-            core.cwd.clone()
-        };
-        let allowlist =
-            crate::model_allowlist::load(std::path::Path::new(&cwd), &self.config.agent_dir);
-        if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector) {
-            // The event rides the typed refusal only (the other seams'
-            // rule): a fail-closed unreadable-allowlist error is a
-            // settings problem, not an allowlist refusal.
-            if refusal
-                .downcast_ref::<pa_core::models::ModelAllowlistRefusal>()
-                .is_some()
-            {
-                if let Some(agent_engine) = &self.agent_engine {
-                    agent_engine.note_model_refused("set_model", &selector);
-                }
-            }
-            return response_failure(None, "set_model", &refusal.to_string(), None);
-        }
         let engine = std::sync::Arc::clone(&self.engine);
         let core = std::sync::Arc::clone(&self.core);
         let agent_dir = self.config.agent_dir.clone();
@@ -254,7 +230,7 @@ mod tests {
             supervisor_socket_path: std::path::PathBuf::new(),
             token: "token".to_string(),
             worker_instance_id: String::new(),
-            active_session_id: "allowlist-session".to_string(),
+            active_session_id: "model-session".to_string(),
             agent_dir: dir.join("agent"),
             recovery_journal_path: dir.join("recovery.jsonl"),
             telemetry_disabled: None,
@@ -288,70 +264,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_model_refuses_models_outside_the_allowlist() {
-        async fn dispatch_set_model(
-            worker: &std::sync::Arc<crate::worker::Worker>,
-        ) -> crate::protocol::DaemonResponse {
-            worker
-                .dispatch(
-                    "set_model",
-                    &json!({
-                        "activeSessionId": "allowlist-session",
-                        "provider": "prime-inference",
-                        "modelId": "mock-1"
-                    }),
-                )
-                .await
-        }
-
-        let dir = std::env::temp_dir().join(format!("pa-worker-al-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        models_fixture(&dir);
-        std::fs::write(
-            dir.join("agent").join("settings.json"),
-            json!({ "allowedModels": ["anthropic/*"] }).to_string(),
-        )
-        .unwrap();
-        let worker = std::sync::Arc::new(crate::worker::Worker::new(worker_config(&dir), None));
-        let created = worker
-            .dispatch("create", &json!({ "noSession": true, "cwd": dir }))
-            .await;
-        assert!(created.success, "create failed: {created:?}");
-        let response = dispatch_set_model(&worker).await;
-        assert!(!response.success);
-        assert_eq!(response.command, "set_model");
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Model \"prime-inference/mock-1\" is blocked by the daemon model allowlist (settings \"allowedModels\"); the daemon never falls back to a different model. Allow it in the settings or pick an allowed model.")
-        );
-
-        // An allowing allowlist opens the gate: the scripted engine then
-        // fails with its own non-switching message.
-        std::fs::write(
-            dir.join("agent").join("settings.json"),
-            json!({ "allowedModels": ["prime-inference/*"] }).to_string(),
-        )
-        .unwrap();
-        let response = dispatch_set_model(&worker).await;
-        assert!(
-            !response.success,
-            "the scripted harness does not switch models"
-        );
-        assert_eq!(
-            response.error.as_deref(),
-            Some("This session does not support model switching")
-        );
-
-        // No allowlist configured: the TS behavior (the gate is a no-op).
-        std::fs::remove_file(dir.join("agent").join("settings.json")).unwrap();
-        let response = dispatch_set_model(&worker).await;
-        assert_eq!(
-            response.error.as_deref(),
-            Some("This session does not support model switching")
-        );
-    }
-
-    #[tokio::test]
     async fn set_model_refuses_an_unsigned_in_provider_with_the_typed_sign_in_error() {
         let dir = std::env::temp_dir().join(format!("pa-worker-si-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -367,7 +279,7 @@ mod tests {
             .dispatch(
                 "set_model",
                 &json!({
-                    "activeSessionId": "allowlist-session",
+                    "activeSessionId": "model-session",
                     "provider": provider,
                     "modelId": model_id,
                 }),
@@ -394,7 +306,7 @@ mod tests {
             .dispatch(
                 "set_model",
                 &json!({
-                    "activeSessionId": "allowlist-session",
+                    "activeSessionId": "model-session",
                     "provider": "anthropic",
                     "modelId": "no-such-model",
                 }),

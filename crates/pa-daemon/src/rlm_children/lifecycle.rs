@@ -1307,9 +1307,6 @@ mod wait_for_child_budget_tests {
             link,
             agent_dir.clone(),
             "parent".to_string(),
-            Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-                agent_dir, true,
-            )),
             String::new(),
         );
         sessions

@@ -1,7 +1,5 @@
 //! Model subsystem: resolver and Prime Inference private models.
 
-pub use allowlist::{model_allowed, ModelAllowlistRefusal};
-pub use catalog_visibility::{CatalogVisibility, FilterSummary, FilteredModels, NOT_IN_ALLOW};
 pub use registry::{
     ModelRegistry, ProviderRequestConfig, ResolvedRequestAuth, SetModelSelectionError,
 };
@@ -14,9 +12,7 @@ pub use catalog_chain::{
 /// through pa-core, so the trigger rides this re-export).
 pub use pa_models::RefreshTrigger;
 
-pub mod allowlist;
 pub(crate) mod catalog_chain;
-pub mod catalog_visibility;
 pub(crate) mod custom;
 pub mod image_model_routing;
 pub(crate) mod prime_inference;

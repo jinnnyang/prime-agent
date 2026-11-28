@@ -719,7 +719,7 @@ impl RlmSubagentHost for InlineHost {
                     thinking,
                 )
             } else {
-                let selector = pa_daemon::rlm_child_model::resolve_child_model_unchecked(
+                let selector = pa_daemon::rlm_child_model::resolve_child_model(
                     &config.agent_dir,
                     request.model.as_deref(),
                     node.model_selector.lock().unwrap().as_deref(),

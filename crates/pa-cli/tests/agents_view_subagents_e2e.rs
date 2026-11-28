@@ -311,7 +311,6 @@ async fn panel_expand_drill_in_and_back_re_expands_the_tree() {
         model_catalog: Vec::new(),
         model_configured_providers: std::collections::HashSet::default(),
         model_recent_models: Vec::new(),
-        model_visibility_note: None,
         default_thinking_level: None,
         session_dir: Some(session_dir.clone()),
         script_path: None,

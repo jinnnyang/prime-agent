@@ -411,7 +411,6 @@ fn chat_options(socket: PathBuf, cwd: PathBuf) -> InteractiveOptions {
         initial_message: None,
         show_images: true,
         fullscreen_mouse: false,
-        model_visibility_note: None,
         theme: "prime".to_string(),
         code_block_indent: "  ".to_string(),
         tree_filter_mode: String::new(),

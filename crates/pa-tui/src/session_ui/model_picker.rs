@@ -17,9 +17,6 @@ const MODEL_CATALOG_REFRESH_TTL: std::time::Duration = std::time::Duration::from
 pub(crate) struct ModelCatalogUpdate {
     pub models: Vec<pa_types::ai::Model>,
     pub configured_providers: std::collections::HashSet<String>,
-    /// The summary line the payload's `modelCatalogVisibility` renders
-    /// (`None` = unfiltered, no line).
-    pub visibility_note: Option<String>,
 }
 
 impl SessionUi {
@@ -70,7 +67,6 @@ impl SessionUi {
             current,
             configured_providers: self.model_configured_providers.clone(),
             recent_models: self.model_recent_models.clone(),
-            visibility_note: self.model_visibility_note.clone(),
             thinking_level,
             scoped_models,
             viewport_rows: picker_viewport_rows(view.terminal_rows()),
@@ -212,15 +208,9 @@ impl SessionUi {
                         .collect()
                 })
                 .unwrap_or_default();
-            let visibility_note = value
-                .get("modelCatalogVisibility")
-                .and_then(|visibility| visibility.get("hidden"))
-                .and_then(Value::as_u64)
-                .map(crate::model_picker::catalog_visibility_note);
             let _ = updates.send(ModelCatalogUpdate {
                 models,
                 configured_providers,
-                visibility_note,
             });
         });
     }
@@ -240,11 +230,9 @@ impl SessionUi {
         let ModelCatalogUpdate {
             models,
             configured_providers,
-            visibility_note,
         } = update;
         self.model_catalog = models;
         self.model_configured_providers = configured_providers;
-        self.model_visibility_note.clone_from(&visibility_note);
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
         if let Some(Overlay::ModelPicker(picker)) = view.overlay.as_mut() {
@@ -252,7 +240,6 @@ impl SessionUi {
                 current,
                 self.model_catalog.clone(),
                 self.model_configured_providers.clone(),
-                visibility_note,
             );
         }
         self.update_model_eligibility_filters(view);

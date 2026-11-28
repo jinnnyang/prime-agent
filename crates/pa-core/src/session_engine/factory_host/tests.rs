@@ -1,5 +1,5 @@
 //! The factory host bridge battery: the declared-selector extraction, the
-//! `run` preflight (catalog resolution, the allowlist pin, request auth, the
+//! `run` preflight (catalog resolution, request auth, the
 //! session-model fallback), and the request validation (#3184 battery
 //! style).
 
@@ -129,18 +129,12 @@ fn inline_machine(model: &str) -> serde_json::Value {
     })
 }
 
-fn host(
-    dir: &Path,
-    session_model: Option<pa_agent::types::Model>,
-    allowed_models: Option<Vec<String>>,
-    local: bool,
-) -> FactoryHost {
+fn host(dir: &Path, session_model: Option<pa_agent::types::Model>, local: bool) -> FactoryHost {
     FactoryHost::new(FactoryHostConfig {
         agent_dir: dir.to_path_buf(),
         global_harness_dir: crate::refinement::get_global_harness_state_dir(dir),
         local_harness_dir: local.then(|| dir.join("local-harness")),
         session_model,
-        allowed_models,
     })
 }
 
@@ -184,7 +178,7 @@ fn declared_model_selectors_cover_both_subagent_forms_and_spec_forms() {
         ],
         &[],
     );
-    let bridge = host(dir.path(), None, None, false);
+    let bridge = host(dir.path(), None, false);
     assert_eq!(
         bridge.spec_model_selectors("inline").unwrap(),
         vec!["testprov/declared-model".to_string()]
@@ -209,7 +203,7 @@ fn declared_model_selectors_cover_both_subagent_forms_and_spec_forms() {
 /// null-is-absent read every settled seam makes — so the preflight must
 /// fall through to the dag's declared models, never read the null as an
 /// empty machine (which exempted the dag's inline model selections from
-/// the allowlist and auth checks before any child spawned).
+/// the auth checks before any child spawned).
 #[test]
 fn a_null_machine_falls_through_to_the_dag_spec() {
     let dir = tempfile::tempdir().unwrap();
@@ -250,7 +244,7 @@ fn a_null_machine_falls_through_to_the_dag_spec() {
         ],
         &[],
     );
-    let bridge = host(dir.path(), None, None, false);
+    let bridge = host(dir.path(), None, false);
     assert_eq!(
         bridge.spec_model_selectors("swept").unwrap(),
         vec!["testprov/declared-model".to_string()],
@@ -260,20 +254,6 @@ fn a_null_machine_falls_through_to_the_dag_spec() {
         bridge.spec_model_selectors("machined").unwrap(),
         vec!["testprov/declared-model".to_string()],
         "the null dag never shadows the machine form"
-    );
-    // End to end: the allowlist blocks the dag's declared model, so the
-    // preflight must refuse the run (before the fix the read answered no
-    // declared models and the preflight passed).
-    let gated = host(
-        dir.path(),
-        None,
-        Some(vec!["otherprov/allowed".to_string()]),
-        false,
-    );
-    let refused = gated.preflight_run("swept");
-    assert!(
-        refused.is_err(),
-        "the allowlist gate sees the dag form's declared model: {refused:?}"
     );
 }
 
@@ -304,15 +284,14 @@ fn titled_subagent(id: &str, title: &str, model: &str) -> HarnessEntry {
 /// subagent wins over a global ID of the same name: the old id-first
 /// sweep matched the global id while the kernel's harness `get` +
 /// title scan spawns the local titled subagent, so the preflight
-/// validated (and allowlisted) the wrong model.
+/// validated the wrong model.
 #[test]
 fn a_local_title_wins_over_a_global_id_of_the_same_name() {
     let dir = tempfile::tempdir().unwrap();
     write_catalog(dir.path());
     write_harness_state(
         dir.path(),
-        // Global: the id "researcher", a model the allowlist would
-        // happily allow while the kernel spawns another.
+        // Global: the id "researcher", a model the kernel does not spawn.
         &[
             titled_subagent("researcher", "g-titled", "testprov/other-model"),
             machine_entry(
@@ -327,9 +306,8 @@ fn a_local_title_wins_over_a_global_id_of_the_same_name() {
         // entry the run names, because the kernel's unprefixed spec
         // lookup reads one store (its harness `get` has no
         // local-then-global fall-through): a spec stored only globally
-        // is an UNKNOWN SPEC to the kernel, so the run the end-to-end
-        // allowlist pins judge would reject before any spawn — the
-        // bypass scenario must run a spec the kernel actually accepts.
+        // is an UNKNOWN SPEC to the kernel, so the run must name a spec
+        // the kernel actually accepts.
         &[
             titled_subagent("titled-researcher", "researcher", "testprov/declared-model"),
             machine_entry(
@@ -340,36 +318,11 @@ fn a_local_title_wins_over_a_global_id_of_the_same_name() {
             ),
         ],
     );
-    let bridge = host(dir.path(), None, None, true);
+    let bridge = host(dir.path(), None, true);
     assert_eq!(
         bridge.spec_model_selectors("spec").unwrap(),
         vec!["testprov/declared-model".to_string()],
         "the local titled subagent's model is the one the preflight reads"
-    );
-    // End to end, the allowlist pins the model the kernel actually
-    // spawns (the local-title model): a gate that allows only the
-    // global-id model must REFUSE the run — the exact bypass the old
-    // id-first sweep produced, letting a blocked model spawn — and a
-    // gate that allows the local-title model passes it.
-    let allows_only_global_id = host(
-        dir.path(),
-        None,
-        Some(vec!["testprov/other-model".to_string()]),
-        true,
-    );
-    assert!(
-        allows_only_global_id.preflight_run("spec").is_err(),
-        "the allowlist gate must judge the model the run actually spawns"
-    );
-    let allows_actual = host(
-        dir.path(),
-        None,
-        Some(vec!["testprov/declared-model".to_string()]),
-        true,
-    );
-    assert!(
-        allows_actual.preflight_run("spec").is_ok(),
-        "the allowed actual model passes the gate"
     );
 }
 
@@ -397,7 +350,7 @@ fn a_duplicate_title_resolves_the_kernel_list_order() {
             titled_subagent("mmm-worker", "researcher", "testprov/shared-id"),
         ],
     );
-    let bridge = host(dir.path(), None, None, true);
+    let bridge = host(dir.path(), None, true);
     assert_eq!(
         bridge.spec_model_selectors("spec").unwrap(),
         vec!["testprov/declared-model".to_string()],
@@ -423,11 +376,11 @@ fn local_state_shadows_the_global_spec() {
         )],
     );
     // The bridge without the local dir sees the global spec.
-    let global_only = host(dir.path(), None, None, false);
+    let global_only = host(dir.path(), None, false);
     global_only.preflight_run("spec").unwrap();
     // With the local dir, the shadowed spec's unresolvable model fails
     // the preflight loudly.
-    let with_local = host(dir.path(), None, None, true);
+    let with_local = host(dir.path(), None, true);
     let error = with_local.preflight_run("spec").unwrap_err().to_string();
     assert!(
         error.starts_with("Requested factory model \"missingprov/model-x\" is unavailable"),
@@ -438,7 +391,7 @@ fn local_state_shadows_the_global_spec() {
 /// An unresolvable subagent reference skips only its own state's read
 /// (the kernel's `run()` owns the unknown-reference error): every other
 /// state's declared models still preflight — one unknown reference must
-/// not exempt a spec's declared models from the catalog, allowlist, and
+/// not exempt a spec's declared models from the catalog and
 /// auth checks (the mutation check on the best-effort read: the whole-spec
 /// `None` read would pass both specs through untouched).
 #[test]
@@ -466,7 +419,7 @@ fn an_unknown_reference_skips_only_its_own_state() {
         ],
         &[],
     );
-    let bridge = host(dir.path(), None, None, false);
+    let bridge = host(dir.path(), None, false);
     // The sibling state's declared model still preflights loudly.
     assert_eq!(
         bridge.spec_model_selectors("mixed").unwrap(),
@@ -514,7 +467,7 @@ fn scoped_ids_preflight_their_own_store() {
             &inline_machine("testprov/other-model"),
         )],
     );
-    let bridge = host(dir.path(), None, None, true);
+    let bridge = host(dir.path(), None, true);
     // The global-scoped id preflights the GLOBAL spec's declared model.
     let error = bridge
         .preflight_run("global:global-scoped")
@@ -553,7 +506,7 @@ fn preflight_resolves_exact_and_short_form_selectors() {
         ],
         &[],
     );
-    let bridge = host(dir.path(), None, None, false);
+    let bridge = host(dir.path(), None, false);
     bridge.preflight_run("exact").unwrap();
     bridge.preflight_run("short").unwrap();
     // A bare id naming two models stays unresolved.
@@ -562,36 +515,6 @@ fn preflight_resolves_exact_and_short_form_selectors() {
         error.starts_with("Requested factory model \"shared-id\" is unavailable"),
         "{error}"
     );
-}
-
-/// The allowlist pin refuses a resolved declared model outside the pin,
-/// exactly like the #3184 router handler.
-#[test]
-fn the_allowlist_pin_refuses_a_resolved_declared_model() {
-    let dir = tempfile::tempdir().unwrap();
-    write_catalog(dir.path());
-    write_harness_state(
-        dir.path(),
-        &[machine_entry(
-            "spec",
-            &inline_machine("testprov/declared-model"),
-        )],
-        &[],
-    );
-    let bridge = host(dir.path(), None, Some(vec!["other/*".to_string()]), false);
-    let error = bridge.preflight_run("spec").unwrap_err().to_string();
-    assert_eq!(
-        error,
-        "Requested factory model \"testprov/declared-model\" is blocked by the model allowlist"
-    );
-    // A selector inside the pin resolves.
-    let bridge = host(
-        dir.path(),
-        None,
-        Some(vec!["testprov/*".to_string()]),
-        false,
-    );
-    bridge.preflight_run("spec").unwrap();
 }
 
 /// The session-model fallback: a declared selector naming the session's own
@@ -609,12 +532,12 @@ fn the_session_model_fallback_gates_on_the_stale_provider() {
         ],
         &[],
     );
-    let bridge = host(dir.path(), Some(session_model()), None, false);
+    let bridge = host(dir.path(), Some(session_model()), false);
     bridge.preflight_run("named").unwrap();
     // A declared selector the catalog carries never reaches the fallback.
     bridge.preflight_run("foreign").unwrap();
     // Without a session model, the catalog-miss selector fails loudly.
-    let bridge = host(dir.path(), None, None, false);
+    let bridge = host(dir.path(), None, false);
     let error = bridge.preflight_run("named").unwrap_err().to_string();
     assert!(
         error.starts_with("Requested factory model \"testprov/session-model\" is unavailable"),
@@ -636,7 +559,7 @@ fn a_spec_without_declared_models_preflights_cleanly() {
         )],
         &[],
     );
-    let bridge = host(dir.path(), None, None, false);
+    let bridge = host(dir.path(), None, false);
     bridge.preflight_run("spec").unwrap();
     // An unknown spec passes through: the kernel's `run()` owns the
     // unknown-spec error.

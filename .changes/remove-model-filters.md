@@ -1,0 +1,1 @@
+- Removed the `allowedModels` daemon allowlist and the `modelCatalog.allow`/`deny` model filters; the model catalog is curated upstream, so the filters are gone and their settings keys are ignored.

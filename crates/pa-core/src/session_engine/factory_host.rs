@@ -10,15 +10,14 @@
 //! precedent — a running cell never delays the live view).
 //!
 //! The module follows the `system_router_host` pattern from #3184: a config
-//! struct of session facts captured in `create_session` (the daemon model
-//! allowlist pin, the session model), a registry-backed model preflight
+//! struct of session facts captured in `create_session` (the session model),
+//! a registry-backed model preflight
 //! (exact catalog match, TS short form, the stale-provider gate) that fails
 //! loudly before a run starts, and a unit battery in the child module. The
 //! direction differs by design: #3184 registers a kernel->host handler, while
 //! the factory bridge serves daemon/TUI->kernel requests through
 //! [`SessionEngine::factory_activity`]; the executor's own children ride the
-//! existing `rlm.spawn` host path, where the daemon allowlist pin is
-//! enforced per spawn.
+//! existing `rlm.spawn` host path.
 
 use std::path::PathBuf;
 
@@ -49,10 +48,6 @@ pub struct FactoryHostConfig {
     /// design, so the preflight crosses it back to the ai side field by
     /// field for the auth check (the #3184 field mapping).
     pub session_model: Option<pa_agent::types::Model>,
-    /// The daemon `allowedModels` pin, enforced on every resolved model the
-    /// preflight accepts (the per-spawn enforcement stays on the
-    /// `rlm.spawn` host path).
-    pub allowed_models: Option<Vec<String>>,
 }
 
 /// The factory host bridge built from [`FactoryHostConfig`]; held by the
@@ -131,7 +126,7 @@ impl FactoryHost {
         // form. `Value::Null` is `Some` here without the filter, so the
         // fall-through never reached the `dag` and the preflight read "no
         // declared models" — exempting the dag's selectors from the
-        // allowlist and auth checks.
+        // auth checks.
         let arguments = entry
             .arguments
             .get("machine")
@@ -189,7 +184,7 @@ impl FactoryHost {
                 // unprefixed tier). A global id must not shadow a local
                 // title — the old id-first sweep matched the global id
                 // while the kernel spawned the local titled subagent,
-                // validating (and allowlisting) the wrong model. Among
+                // validating the wrong model. Among
                 // duplicate titles within a tier, the kernel's title
                 // scan reads `harness.list`, sorted by (kind, path,
                 // title, id), so it picks the (path, id)-least entry —
@@ -235,7 +230,7 @@ impl FactoryHost {
 
     /// Preflight one `factory run` from the daemon/TUI lane: every model
     /// selector the spec declares must resolve through the credential-backed
-    /// catalog, sit inside the daemon allowlist pin, and carry request auth
+    /// catalog, and carry request auth
     /// — a doomed run fails before any child spawns (the #3184 auth
     /// preflight's factory analogue). States without a declared model ride
     /// the existing spawn-path default chain (resolved per spawn); a spec
@@ -245,7 +240,7 @@ impl FactoryHost {
     /// # Errors
     ///
     /// Returns an error when a declared selector is unavailable,
-    /// unauthenticated, or expired, sits outside the allowlist pin, or its
+    /// unauthenticated, or expired, or its
     /// provider credentials are stale.
     pub fn preflight_run(&self, spec_id: &str) -> anyhow::Result<()> {
         let Some(selectors) = self.spec_model_selectors(spec_id) else {
@@ -264,14 +259,6 @@ impl FactoryHost {
             let model = resolve_declared_model(&searchable, &selector)
                 .or_else(|| self.session_model_fallback(&registry, &selector))
                 .ok_or_else(|| unavailable_error(&selector))?;
-            if let Some(allowlist) = &self.config.allowed_models {
-                let pinned = format!("{}/{}", model.provider, model.id).to_lowercase();
-                if !crate::models::model_allowed(&pinned, allowlist) {
-                    anyhow::bail!(
-                        "Requested factory model \"{pinned}\" is blocked by the model allowlist"
-                    );
-                }
-            }
             let resolved = registry.get_api_key_and_headers(&model, model.headers.as_ref());
             if !resolved.ok {
                 anyhow::bail!(
@@ -308,7 +295,7 @@ impl FactoryHost {
 }
 
 /// The ai-side view of the session's agent-side model descriptor, for the
-/// preflight's allowlist and auth checks only. The two `Model`s do not
+/// preflight's auth checks only. The two `Model`s do not
 /// share a wire shape (the agent side serializes `base_url`, never carries
 /// `input`), and the descriptor is lossy by design (no input modalities,
 /// thinking-level map, featured flag, request headers, or compat

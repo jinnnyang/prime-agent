@@ -269,10 +269,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // (`settings` moves into the loader); the `PI_REQUEST_TIMING` half stays live.
     let request_timing_settings = settings.get_request_timing();
     // Captured before `settings` moves into the resource loader: the
-    // factory host bridge's preflight facts (the daemon `allowedModels`
-    // pin), like the request-timing snapshot above.
-    let factory_allowed_models = settings.get_allowed_models();
-    // Captured before `settings` moves into the resource loader: the
     // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     let web_search_provider = settings.get_web_search_provider();
@@ -945,7 +941,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .await;
     // The factory host bridge: registered from `create_session` (the #3184
     // pattern), so the daemon/TUI factory surface resolves against this
-    // session's harness dirs, model registry, and the allowlist pin. The
+    // session's harness dirs and model registry. The
     // kernel owns the runs; the bridge prefights and tunnels. Captured
     // before the loop wiring moves the session model and the digest moves
     // the local harness dir.
@@ -955,7 +951,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             global_harness_dir: crate::refinement::get_global_harness_state_dir(&config.agent_dir),
             local_harness_dir: factory_local_harness_dir,
             session_model: factory_session_model,
-            allowed_models: factory_allowed_models,
         });
     Ok(SessionEngine {
         session,
@@ -1098,8 +1093,8 @@ impl SessionEngine {
 
     /// One factory activity over this session's live kernel: the `/factory`
     /// view's bridge lane (graph/status/watch/run/stop/resume). A `run`
-    /// prefights the spec's declared models first (allowlist pin, request
-    /// auth) so a doomed run fails before any child spawns; then the
+    /// prefights the spec's declared models first (request auth) so a
+    /// doomed run fails before any child spawns; then the
     /// out-of-band frame carries the request into the kernel's executor,
     /// which owns the run registry.
     ///
