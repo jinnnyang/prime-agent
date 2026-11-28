@@ -1,0 +1,1 @@
+- The kernel bootstrap's missing-uv error now lists every location it searched, reports PATH entries it refused to run from, and says to restart Prime Agent when uv was installed after launch, so a stale PATH snapshot is diagnosable instead of a bare "uv is required".
