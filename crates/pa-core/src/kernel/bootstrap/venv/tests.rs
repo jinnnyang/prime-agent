@@ -582,9 +582,77 @@ fn disk_memo_late_write_after_invalidate_is_benign() {
 }
 
 /// Env-mutating tests serialize on this lock: the process env is global.
-/// Unix only: its takers are the unix env-override tests.
-#[cfg(unix)]
+/// Every taker takes it on every platform, so a Windows-only taker cannot
+/// race a POSIX one.
 static PRIME_AGENT_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A bootstrap that fails never reports the completion line: `✓ ready`
+/// before the failure is what made the missing-uv report read as a success.
+#[tokio::test]
+async fn a_failed_bootstrap_never_reports_ready() {
+    let _guard = PRIME_AGENT_ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let package = dir.path().join("package");
+    let runtime = package.join("prime-agent-runtime");
+    let rlm = runtime.join("src").join("rlm");
+    std::fs::create_dir_all(&rlm).unwrap();
+    std::fs::write(
+        runtime.join("pyproject.toml"),
+        "[project]\nname = 'prime-agent-runtime'\n",
+    )
+    .unwrap();
+    std::fs::write(rlm.join("__init__.py"), "").unwrap();
+    std::fs::write(rlm.join("repl.py"), "").unwrap();
+    let venv = dir.path().join("kernel-venv");
+    let no_uv = dir.path().join("no-uv");
+    std::fs::create_dir_all(&no_uv).unwrap();
+
+    let previous_home = std::env::var("HOME").ok();
+    let previous_package = std::env::var("PI_PACKAGE_DIR").ok();
+    let previous_venv = std::env::var("PRIME_AGENT_KERNEL_VENV").ok();
+    let previous_path = std::env::var("PATH").ok();
+    let previous_override = std::env::var("PRIME_AGENT_KERNEL_PYTHON").ok();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("PI_PACKAGE_DIR", &package);
+    std::env::set_var("PRIME_AGENT_KERNEL_VENV", &venv);
+    std::env::set_var("PATH", &no_uv);
+    std::env::remove_var("PRIME_AGENT_KERNEL_PYTHON");
+    let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let collected = std::sync::Arc::clone(&progress);
+    let resolved = super::super::ensure_kernel_python(super::super::EnsureKernelPythonOptions {
+        python_skills: Vec::new(),
+        on_progress: Some(std::sync::Arc::new(move |message: &str| {
+            collected.lock().unwrap().push(message.to_string());
+        })),
+    })
+    .await;
+    for (name, previous) in [
+        ("HOME", previous_home),
+        ("PI_PACKAGE_DIR", previous_package),
+        ("PRIME_AGENT_KERNEL_VENV", previous_venv),
+        ("PATH", previous_path),
+        ("PRIME_AGENT_KERNEL_PYTHON", previous_override),
+    ] {
+        match previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+    assert!(resolved.is_err(), "no uv anywhere: {resolved:?}");
+    let reported: Vec<String> = progress.lock().unwrap().clone();
+    assert!(
+        reported
+            .iter()
+            .any(|message| message.contains("setting up python kernel")),
+        "the setup line must still print: {reported:?}"
+    );
+    assert!(
+        !reported.iter().any(|message| message.contains("ready")),
+        "a failed setup never reports ready: {reported:?}"
+    );
+}
 
 /// A caller-owned `PRIME_AGENT_KERNEL_PYTHON` override resolves through
 /// the DIRECT probe and never reads or writes any memo file.

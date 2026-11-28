@@ -1,0 +1,1 @@
+- Fixed the kernel setup reporting `✓ ready` before the fatal error that says it failed.
