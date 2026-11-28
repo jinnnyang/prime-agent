@@ -157,17 +157,18 @@ fn safe_home_uv_with_home(path: &Path, project: Option<&Path>, home: Option<&Pat
     let Some(project) = resolve_project(project) else {
         return false;
     };
-    let nearest_checkout = project
+    // Only a real checkout is a boundary: a project without one - the home
+    // directory a shell opens in, where the pinned uv also lives, or `/` -
+    // has nothing checked in to guard against. Using it as the boundary
+    // would reject the install this probe exists to find (a fresh Windows
+    // install pre-warms the kernel from exactly that home directory).
+    let Some(nearest_checkout) = project
         .ancestors()
-        .find(|ancestor| ancestor.join(".git").exists());
-    // An unmarked filesystem root is not a repository boundary. Mirrors
-    // safe_path_with_mode: a first-time setup launched from `/` must still
-    // find the home uv.
-    if nearest_checkout.is_none() && project.parent().is_none() {
+        .find(|ancestor| ancestor.join(".git").exists())
+    else {
         return true;
-    }
-    let active_boundary = nearest_checkout.unwrap_or(&project);
-    !path_starts_with(&canonical_uv, active_boundary)
+    };
+    !path_starts_with(&canonical_uv, nearest_checkout)
 }
 
 /// Drop ambient Python import roots after caller overrides are applied.
@@ -620,6 +621,29 @@ mod tests {
             Some(filesystem_root),
             Some(&home)
         ));
+    }
+
+    #[test]
+    fn the_home_directory_is_not_a_project_boundary() {
+        // A fresh install runs the installer's kernel pre-warm, and then the
+        // first session, with the cwd set to the user's home directory (a
+        // shell opens there), and the pinned uv install lives inside that
+        // home. Nothing there was checked in, so the home directory must not
+        // act as the checkout boundary that refuses the pinned uv.
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let tool_dir = home.join(".local/bin");
+        let uv = tool_dir.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(&uv, "uv").unwrap();
+        // The tempdir's own ancestry belongs to the harness, not the fixture.
+        if home
+            .ancestors()
+            .any(|ancestor| ancestor.join(".git").exists())
+        {
+            return;
+        }
+        assert!(safe_home_uv_with_home(&uv, Some(&home), Some(&home)));
     }
 
     #[test]
